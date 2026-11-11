@@ -1,0 +1,40 @@
+<!doctype html>
+<html lang="zh-CN">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <title>文案审定</title>
+  <link rel="stylesheet" href="/static/review.css">
+</head>
+<body>
+  <aside id="list">
+    <h1>文案审定</h1>
+    <p class="hint">生成的文案在 data/scripts/。开播前通读一遍，确认无误后点“审定通过”。</p>
+    <div id="scripts"></div>
+  </aside>
+
+  <main id="editor">
+    <p class="empty" id="placeholder">从左侧选择一份文案。</p>
+    <div id="doc" hidden>
+      <div id="toolbar">
+        <span id="status"></span>
+        <span id="dirty" hidden>有未保存的修改</span>
+        <button id="save" type="button">保存并重新检查</button>
+        <button id="approve" type="button" class="primary">审定通过</button>
+      </div>
+      <p id="demo-warning" class="warn" hidden>当前使用的是演示档案（config/profile.example.yaml），素材对照不是你的真实经历。</p>
+      <p id="run-hint" class="hint"></p>
+
+      <label class="field">标题<input id="f-title"></label>
+      <label class="field">节目设定（会作为 AI 回复的背景）<textarea id="f-bible" rows="3"></textarea></label>
+      <label class="field">大悬念<textarea id="f-big_hook" rows="2"></textarea></label>
+      <label class="field">答案（只能在最后一段揭晓）<textarea id="f-payoff" rows="2"></textarea></label>
+      <ul id="outline-issues" class="issues"></ul>
+
+      <div id="segments"></div>
+    </div>
+  </main>
+
+  <script type="module" src="/static/review.js"></script>
+</body>
+</html>

@@ -43,6 +43,7 @@ body {
 #clock { color: var(--text); font-variant-numeric: tabular-nums; font-size: 16px; }
 #seg { color: var(--text); overflow: hidden; text-overflow: ellipsis; min-width: 0; }
 #keys { margin-left: auto; color: var(--faint); }
+#approval { color: var(--warn); text-decoration: none; }
 .lamp::before {
   content: "";
   display: inline-block;

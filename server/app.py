@@ -3,6 +3,7 @@
   .venv/bin/python -m server.app --mock                  # 模拟评论
   .venv/bin/python -m server.app --live-id 你的房间号     # 真实直播间
   .venv/bin/python -m server.app --manual                # 只手动粘贴评论
+  .venv/bin/python -m server.app --review                # 只打开文案审定页
 
 然后用浏览器打开 http://127.0.0.1:8765 ，全屏使用。
 """
@@ -15,17 +16,20 @@ from contextlib import asynccontextmanager
 
 import uvicorn
 from fastapi import FastAPI, WebSocket, WebSocketDisconnect
-from fastapi.responses import FileResponse
+from fastapi.responses import FileResponse, RedirectResponse
 from fastapi.staticfiles import StaticFiles
 
 from .bus import Bus
 from .config import ROOT, STATIC, filter_words
 from .reply.engine import ReplyEngine
 from .reply.filters import CommentFilter, is_question
+from .review_api import router as review_router
 from .script_store import Script
+from .session import SessionRecorder
 from .sources.supervisor import SourceSupervisor
 
 COMMENT_FIELDS = ("id", "nick", "text", "t", "q", "filtered", "source")
+CARD_ACTIONS = {"expand", "collapse", "used", "pin", "unpin", "dismiss", "reply_now"}
 
 
 def resolve_script(arg: str):
@@ -40,10 +44,31 @@ def resolve_script(arg: str):
 
 
 def build_app(args) -> FastAPI:
+    app = FastAPI()
+    app.mount("/static", StaticFiles(directory=STATIC), name="static")
+    app.include_router(review_router)
+
+    @app.get("/review")
+    async def review_page():
+        return FileResponse(STATIC / "review.html")
+
+    if args.review:  # 只审定文案：不采集、不调用模型、不录制
+        @app.get("/")
+        async def root():
+            return RedirectResponse("/review")
+        return app
+
     bus = Bus()
-    script = Script(resolve_script(args.script))
+    script_path = resolve_script(args.script)
+    script = Script(script_path)
+    if not script.data.get("approved_at"):
+        print("提示：这份文案还没有审定，可在 /review 页面审定。")
     filt = CommentFilter(filter_words())
     engine = ReplyEngine(bus, script, enabled=not args.no_reply)
+    mode = "live" if args.live_id else "mock" if args.mock is not None else "manual"
+    rec = None if args.no_record else SessionRecorder(script.data, script_path, mode)
+    if rec:
+        bus.taps.append(rec.tap)
     seq = itertools.count(1)
     started = time.time()
 
@@ -52,18 +77,20 @@ def build_app(args) -> FastAPI:
         c = {"id": f"m{next(seq)}", "uid": uid, "nick": nick, "text": text,
              "t": t or time.time(), "q": is_question(text), "filtered": reason, "source": source}
         engine.remember(c)
+        if rec:
+            rec.comment(c)
         if reason is None:
             engine.add(c)
         await bus.publish({"type": "comment", **{k: c[k] for k in COMMENT_FIELDS}})
 
-    async def on_event(rec):
-        typ = rec.get("type")
-        if typ == "chat" and rec.get("content"):
-            await ingest(rec.get("uid", ""), rec.get("nick", ""), rec["content"], rec.get("t"),
+    async def on_event(ev):
+        typ = ev.get("type")
+        if typ == "chat" and ev.get("content"):
+            await ingest(ev.get("uid", ""), ev.get("nick", ""), ev["content"], ev.get("t"),
                          source=sup.kind)
         elif typ == "stats":
-            await bus.publish({"type": "stats", "online": rec.get("online"),
-                               "total_pv": rec.get("total_pv")})
+            await bus.publish({"type": "stats", "online": ev.get("online"),
+                               "total_pv": ev.get("total_pv")})
 
     sup = None
     if args.live_id:
@@ -88,9 +115,10 @@ def build_app(args) -> FastAPI:
             await sup.stop()
         for t in tasks:
             t.cancel()
+        if rec:
+            rec.close()
 
-    app = FastAPI(lifespan=lifespan)
-    app.mount("/static", StaticFiles(directory=STATIC), name="static")
+    app.router.lifespan_context = lifespan
 
     @app.get("/")
     async def index():
@@ -99,8 +127,10 @@ def build_app(args) -> FastAPI:
     @app.websocket("/ws")
     async def ws(sock: WebSocket):
         await sock.accept()
-        await sock.send_text(json.dumps({"type": "hello", "script": script.to_client(),
-                                         "started": started}, ensure_ascii=False))
+        await sock.send_text(json.dumps({
+            "type": "hello", "script": script.to_client(), "started": started,
+            "approved": bool(script.data.get("approved_at")),
+            "script_file": script_path.name}, ensure_ascii=False))
         for m in bus.snapshot():
             await sock.send_text(json.dumps(m, ensure_ascii=False))
         bus.clients.add(sock)
@@ -113,12 +143,19 @@ def build_app(args) -> FastAPI:
                 t = msg.get("type")
                 if t == "viewport":
                     engine.set_viewport(msg.get("visible") or [], msg.get("reading"))
+                    if rec and engine.reading:
+                        rec.reading(engine.reading)
                 elif t == "manual_comment":
                     text = str(msg.get("text", "")).strip()[:200]
                     if text:
                         await ingest("manual", "手动输入", text, source="manual")
                 elif t == "reply_now":
+                    if rec:
+                        rec.log("card_action", action="reply_now", comment=msg.get("comment_id"))
                     await engine.trigger_now(msg.get("comment_id"))
+                elif t == "card_action" and msg.get("action") in CARD_ACTIONS:
+                    if rec:
+                        rec.log("card_action", id=str(msg.get("id", ""))[:20], action=msg["action"])
         except WebSocketDisconnect:
             pass
         finally:
@@ -134,12 +171,15 @@ def main():
     g.add_argument("--mock", nargs="?", const="examples/mock_comments.txt",
                    help="模拟评论，可指定样例文件（默认 examples/mock_comments.txt）")
     g.add_argument("--manual", action="store_true", help="不采集，只手动粘贴评论")
+    g.add_argument("--review", action="store_true", help="只打开文案审定页")
     ap.add_argument("--script", default="examples/script_demo.json",
                     help="直播文案 JSON；latest 表示最新生成的一份")
     ap.add_argument("--no-reply", action="store_true", help="关闭 AI 回复")
+    ap.add_argument("--no-record", action="store_true", help="不录制本场数据")
     ap.add_argument("--port", type=int, default=8765)
     args = ap.parse_args()
-    print(f"打开 http://127.0.0.1:{args.port} ，按 Ctrl-C 停止。")
+    page = "/review" if args.review else ""
+    print(f"打开 http://127.0.0.1:{args.port}{page} ，按 Ctrl-C 停止。")
     uvicorn.run(build_app(args), host="127.0.0.1", port=args.port, log_level="warning")
 
 

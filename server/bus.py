@@ -11,8 +11,11 @@ class Bus:
         self.recent_comments: deque = deque(maxlen=200)  # 新打开的页面补发最近评论
         self.recent_cards: deque = deque(maxlen=10)
         self.status: dict = {}
+        self.taps: list = []  # 旁路监听，例如会话录制
 
     async def publish(self, msg: dict):
+        for tap in self.taps:
+            tap(msg)
         t = msg.get("type")
         if t == "comment":
             self.recent_comments.append(msg)

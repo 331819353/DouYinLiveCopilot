@@ -46,6 +46,8 @@ function handle(m) {
     case "hello":
       startedAt = m.started * 1000;
       if (!script) renderScript(m.script);
+      $("#approval").hidden = !!m.approved;
+      $("#approval").title = `${m.script_file || ""}：开播前请在审定页通读并审定`;
       break;
     case "comment": queueComment(m); break;
     case "card": addCard(m.card); break;
@@ -269,23 +271,27 @@ function addCard(card) {
     return b;
   };
   const holdKey = `card:${card.id}`;
+  const report = (action) => send({ type: "card_action", id: card.id, action }); // 供下播复盘统计
   if (!esc) {
     const toggle = btn("展开", () => {
       const open = node.classList.toggle("open");
       toggle.textContent = open ? "收起" : "展开";
       if (open) scroller?.hold(holdKey); else scroller?.release(holdKey); // 看卡片时文案暂停
+      report(open ? "expand" : "collapse");
     }, "primary");
   }
   btn(esc ? "已处理" : "已用", () => {
     node.classList.add("used");
     scroller?.release(holdKey);
+    report("used");
     setTimeout(() => node.remove(), 1500);
   });
   const pin = btn("置顶", () => {
-    node.classList.toggle("pinned");
-    pin.textContent = node.classList.contains("pinned") ? "取消置顶" : "置顶";
+    const pinned = node.classList.toggle("pinned");
+    pin.textContent = pinned ? "取消置顶" : "置顶";
+    report(pinned ? "pin" : "unpin");
   });
-  if (!esc) btn("忽略", () => { scroller?.release(holdKey); node.remove(); });
+  if (!esc) btn("忽略", () => { scroller?.release(holdKey); report("dismiss"); node.remove(); });
   node.appendChild(actions);
 
   cardsBox.prepend(node);
