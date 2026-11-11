@@ -177,14 +177,20 @@ def run_live(live_id: str) -> int:
     return 0 if Fetcher.ended else 1
 
 
-def run_mock(seconds: float) -> int:
+def run_mock(seconds: float, mock_file: str | None = None) -> int:
     rnd = random.Random()
     samples = ["真的假的？", "1000块怎么够啊", "我也是这样过来的", "主播哪个学校的",
                "奖学金好拿吗", "哈哈哈哈", "编的吧", "求更新"]
+    interval = (0.2, 0.8)
+    if mock_file:
+        # 从文件读取评论样例，每行一条；间隔放慢，接近真实直播间节奏
+        lines = Path(mock_file).read_text("utf-8").splitlines()
+        samples = [l.strip() for l in lines if l.strip() and not l.startswith("#")]
+        interval = (0.8, 3.0)
     emit("open", room_id="mock")
     end = time.time() + seconds
     while time.time() < end:
-        time.sleep(rnd.uniform(0.2, 0.8))
+        time.sleep(rnd.uniform(*interval))
         emit("chat", uid=uid_hash(rnd.randint(1, 50)), nick=f"观众{rnd.randint(1, 50)}",
              content=rnd.choice(samples),
              server_t=int((time.time() - rnd.uniform(0.5, 2.0)) * 1000))  # 模拟 0.5～2 秒延迟
@@ -199,8 +205,10 @@ def main():
     g = ap.add_mutually_exclusive_group(required=True)
     g.add_argument("--live-id", help="直播间网址 live.douyin.com/<这串数字>")
     g.add_argument("--mock-seconds", type=float, help="离线模拟若干秒后退出")
+    ap.add_argument("--mock-file", help="模拟模式下的评论样例文件，每行一条")
     args = ap.parse_args()
-    code = run_mock(args.mock_seconds) if args.mock_seconds else run_live(args.live_id)
+    code = run_mock(args.mock_seconds, args.mock_file) if args.mock_seconds \
+        else run_live(args.live_id)
     OUT.flush()
     os._exit(code)  # 原库的心跳线程不是守护线程，直接退出，避免进程挂住
 

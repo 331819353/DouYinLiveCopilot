@@ -1,0 +1,56 @@
+<!doctype html>
+<html lang="zh-CN">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <title>直播提词助手</title>
+  <link rel="stylesheet" href="/static/app.css">
+</head>
+<body>
+  <header id="bar">
+    <span id="clock" title="开播计时">00:00:00</span>
+    <span id="seg" title="当前段落与计划剩余时间">-</span>
+    <span id="speed" title="按 + / - 调整">240 字/分</span>
+    <span id="online">在线 -</span>
+    <span id="src" class="lamp" title="">采集 -</span>
+    <span id="ai" class="lamp" title="">AI -</span>
+    <span id="keys">空格 锁定暂停 · + / - 调速 · 悬停文案暂停</span>
+  </header>
+
+  <main>
+    <section id="script-pane" aria-label="直播文案">
+      <div id="script-viewport">
+        <div id="script-track"></div>
+        <div id="reading-line" aria-hidden="true"></div>
+        <div id="pause-badge" hidden></div>
+      </div>
+    </section>
+
+    <aside>
+      <section id="comments-pane" aria-label="实时评论">
+        <div class="pane-head">
+          <span>实时评论</span>
+          <label><input type="checkbox" id="show-filtered"> 显示已过滤</label>
+        </div>
+        <div id="comments"></div>
+        <button id="new-pill" type="button" hidden></button>
+        <form id="manual" autocomplete="off">
+          <input id="manual-input" maxlength="200" placeholder="手动输入或粘贴评论，回车发送">
+        </form>
+      </section>
+
+      <section id="cards-pane" aria-label="AI 回复建议">
+        <div class="pane-head">
+          <span>AI 回复建议</span>
+          <span id="ai-note"></span>
+        </div>
+        <div id="cards">
+          <p class="empty" id="cards-empty">评论进来后，这里会出现回复建议。</p>
+        </div>
+      </section>
+    </aside>
+  </main>
+
+  <script type="module" src="/static/app.js"></script>
+</body>
+</html>
