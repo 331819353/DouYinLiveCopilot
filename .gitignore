@@ -6,3 +6,4 @@ data/
 evals/results/
 vendor/
 .DS_Store
+config/profile.yaml

@@ -28,9 +28,20 @@ from .sources.supervisor import SourceSupervisor
 COMMENT_FIELDS = ("id", "nick", "text", "t", "q", "filtered", "source")
 
 
+def resolve_script(arg: str):
+    """--script latest 表示 data/scripts/ 下最新生成的一份。"""
+    if arg == "latest":
+        found = sorted((ROOT / "data" / "scripts").glob("*.json"))
+        if not found:
+            raise SystemExit("data/scripts/ 下还没有生成的文案，先运行 python -m server.script")
+        print(f"加载文案：{found[-1].relative_to(ROOT)}")
+        return found[-1]
+    return ROOT / arg
+
+
 def build_app(args) -> FastAPI:
     bus = Bus()
-    script = Script(ROOT / args.script)
+    script = Script(resolve_script(args.script))
     filt = CommentFilter(filter_words())
     engine = ReplyEngine(bus, script, enabled=not args.no_reply)
     seq = itertools.count(1)
@@ -123,7 +134,8 @@ def main():
     g.add_argument("--mock", nargs="?", const="examples/mock_comments.txt",
                    help="模拟评论，可指定样例文件（默认 examples/mock_comments.txt）")
     g.add_argument("--manual", action="store_true", help="不采集，只手动粘贴评论")
-    ap.add_argument("--script", default="examples/script_demo.json", help="直播文案 JSON")
+    ap.add_argument("--script", default="examples/script_demo.json",
+                    help="直播文案 JSON；latest 表示最新生成的一份")
     ap.add_argument("--no-reply", action="store_true", help="关闭 AI 回复")
     ap.add_argument("--port", type=int, default=8765)
     args = ap.parse_args()

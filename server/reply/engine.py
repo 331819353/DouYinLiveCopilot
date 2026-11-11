@@ -13,6 +13,7 @@ from collections import deque
 from openai import APIConnectionError, APIStatusError, APITimeoutError, AsyncOpenAI
 
 from ..config import HELP_RESOURCES, PROMPTS, route
+from ..profile import load_profile, persona_text
 from .schema import parse_output
 
 # 每轮从候选评论里挑最多 PICK 条，每条单独、并行调用一次模型。
@@ -40,7 +41,10 @@ class ReplyEngine:
             self.disabled_reason = None
         self.client = AsyncOpenAI(api_key=key, base_url=self.cfg["base_url"], max_retries=0,
                                   timeout=20) if self.enabled else None
-        system = (PROMPTS / "reply_system.md").read_text("utf-8")
+        profile, self.demo_profile = load_profile()
+        system = ((PROMPTS / "reply_system.md").read_text("utf-8")
+                  .replace("{name}", profile.get("name", "主播"))
+                  .replace("{persona}", persona_text(profile, with_materials=True)))
         self.system = f"{system}\n\n# 节目圣经（全场固定）\n\n{script.bible}"  # 固定前缀，命中缓存
 
         self.pool: deque = deque()     # 待处理的评论

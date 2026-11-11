@@ -17,7 +17,7 @@
 | M0 可行性 | 评论采集已在真实直播间跑通，两小时稳定性测试进行中；实时回复模型选定 `deepseek-flash`（推理 low） |
 | M1 界面 | 已完成：三栏布局、滚动提词、悬停暂停、可视段落追踪、评论区、回复卡片 |
 | M3 回复引擎 | 基本可用：过滤、触发、调用、校验；评测集和真实评论验证未完成 |
-| M2 文案生成 | 未开始，目前使用 `examples/script_demo.json` 演示文案 |
+| M2 文案生成 | 基本可用：选题、大纲、分段写作、审校、计时；热榜接入的实际运行尚未验证 |
 
 ## 目录
 
@@ -27,6 +27,10 @@ server/sources/webfetcher_worker.py   评论采集子进程，输出 JSON Lines 
 server/sources/supervisor.py          管理采集子进程：重连、健康判断
 server/reply/engine.py                实时回复引擎
 server/reply/filters.py               评论预过滤（广告、低俗、重复、无信息）
+server/script/                        文案生成：热榜、选题、大纲、分段写作、审校
+server/profile.py                     主播档案读取
+config/profile.example.yaml           主播档案模板（复制为 profile.yaml 后填写）
+prompts/script_rules.md               文案通用规则：真实性、红线、钩子与节奏
 static/                               前端页面（原生 JS，无需构建）
 config/llm.yaml                       模型配置：各环节用哪个模型、地址、参数、价格
 config/filter_words.txt               评论过滤词，可自行增删
@@ -34,6 +38,45 @@ prompts/reply_system.md               实时回复的系统提示词（当前为
 examples/                             演示文案和模拟评论
 DESIGN.md                             设计方案
 ```
+
+## 主播档案
+
+文案生成和实时回复共用一份档案，内容包括身份、关注领域、价值观、绝不碰的内容、说话风格和真实素材。
+
+```bash
+cp config/profile.example.yaml config/profile.yaml   # 然后改成你自己的内容
+```
+
+`profile.yaml` 不进版本库。没有这个文件时会使用演示档案（虚构人设“小林”）。
+
+**真实素材最重要。** 文案里标为“亲历”的故事只能来自素材，AI 可以润色，但不能添加事实。素材越多越具体，文案越真实，也越不容易被要求改成虚构。
+
+## 生成文案
+
+```bash
+.venv/bin/python -m server.script                         # 拉热榜，列出 5 个候选选题后选择
+.venv/bin/python -m server.script --hot-file hot.txt      # 用手工整理的热榜，每行一条
+.venv/bin/python -m server.script --no-trends --pick 1    # 不用热榜，直接取排名第一的选题
+.venv/bin/python -m server.script --topic "自己定的标题"   # 跳过选题，直接按这个题目写
+```
+
+**常用参数：**
+- `--minutes`：直播时长，默认 120。
+- `--cpm`：语速（字/分），默认 240。
+- `--parallel`：同时写几段，默认 4。
+
+**流程：** 选题 → 大纲 → 各段并行写作 → 审校 → 计时。
+- **程序检查：** 亲历段落必须对应真实素材；虚构故事开头必须让观众听得出是虚构；字数是否接近目标。
+- **模型审校：** 有没有添加素材外的事实、编造热点细节、触碰红线、夸大钩子。
+- **重写：** 有问题的段落重写一次，还剩的问题记在文案文件的 `review.open_issues` 里，需要你人工看一下。
+
+生成的文案保存在 `data/scripts/`，用 `--script latest` 加载：
+
+```bash
+.venv/bin/python -m server.app --script latest --live-id 你的房间号
+```
+
+**热榜来源：** 热榜通过 MCP 调用 [mcp-trends-hub](https://github.com/baranwang/mcp-trends-hub)，固定为 1.7.0 版本，代码已审查过。它会通过 `npx` 下载并运行，需要 Node.js。默认只取微博、知乎、抖音、头条、澎湃的热榜；热榜只有标题，文案里只把热点当引子，不编造事件细节。
 
 ## 启动
 
