@@ -1,0 +1,43 @@
+# 模型配置。密钥写在项目根目录的 .env 里，这里只填环境变量名。
+# 价格单位：元 / 百万 tokens，取自官方价目表（2026-11-11 读取）。
+# DeepSeek 用的是空闲时段价，高峰时段（工作日 9-12、14-18 点）价格翻倍。
+
+# 各环节使用哪个 provider
+routes:
+  reply: deepseek-flash-low     # 实时回复（M0 实测 p95 4.6 秒）
+  script: deepseek-v4-pro       # 文案生成（尚未评测，M2 再定）
+
+providers:
+  deepseek-flash-low:
+    base_url: https://api.deepseek.com
+    model: deepseek-flash
+    api_key_env: DEEPSEEK_API_KEY
+    json_mode: true
+    extra_body: { reasoning_effort: low }
+    price: { input_cache_hit: 0.02, input_cache_miss: 1.0, output: 4.0 }
+
+  # 备用：如果真实评论下 reply 的 p95 超过 6 秒，就把 routes.reply 改成它
+  deepseek-flash-nothink:
+    base_url: https://api.deepseek.com
+    model: deepseek-flash
+    api_key_env: DEEPSEEK_API_KEY
+    json_mode: true
+    extra_body: { thinking: { type: disabled } }
+    price: { input_cache_hit: 0.02, input_cache_miss: 1.0, output: 4.0 }
+
+  deepseek-v4-pro:
+    base_url: https://api.deepseek.com
+    model: deepseek-v4-pro
+    api_key_env: DEEPSEEK_API_KEY
+    json_mode: true
+    extra_body: {}
+    price: { input_cache_hit: 0.15, input_cache_miss: 4.5, output: 13.5 }
+
+  # 豆包备选，未评测。base_url 请在方舟控制台核对，model 填模型 ID 或推理接入点 ID
+  doubao-seed-2.1-turbo:
+    base_url: https://ark.cn-beijing.volces.com/api/v3
+    model: ""
+    api_key_env: ARK_API_KEY
+    json_mode: true
+    extra_body: {}
+    price: { input_cache_hit: 0.6, input_cache_miss: 3.0, output: 15.0 }
