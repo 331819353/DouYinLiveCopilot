@@ -21,6 +21,7 @@ from fastapi.staticfiles import StaticFiles
 
 from .bus import Bus
 from .config import ROOT, STATIC, filter_words
+from .insert import InsertEngine
 from .reply.engine import ReplyEngine
 from .reply.filters import CommentFilter, is_question
 from .review_api import router as review_router
@@ -65,7 +66,8 @@ def build_app(args) -> FastAPI:
         print("提示：这份文案还没有审定，可在 /review 页面审定。")
     filt = CommentFilter(filter_words())
     engine = ReplyEngine(bus, script, enabled=not args.no_reply)
-    mode = "live" if args.live_id else "mock" if args.mock is not None else "manual"
+    inserts = InsertEngine(bus, script, enabled=not args.no_reply)
+    mode ="live" if args.live_id else "mock" if args.mock is not None else "manual"
     rec = None if args.no_record else SessionRecorder(script.data, script_path, mode)
     if rec:
         bus.taps.append(rec.tap)
@@ -81,6 +83,7 @@ def build_app(args) -> FastAPI:
             rec.comment(c)
         if reason is None:
             engine.add(c)
+            inserts.add(c)
         await bus.publish({"type": "comment", **{k: c[k] for k in COMMENT_FIELDS}})
 
     async def on_event(ev):
@@ -107,7 +110,8 @@ def build_app(args) -> FastAPI:
 
     @asynccontextmanager
     async def lifespan(app):
-        tasks = [asyncio.create_task(engine.run()), asyncio.create_task(health_loop())]
+        tasks = [asyncio.create_task(engine.run()), asyncio.create_task(health_loop()),
+                 asyncio.create_task(inserts.run())]
         if sup:
             tasks.append(asyncio.create_task(sup.run()))
         yield
@@ -133,6 +137,9 @@ def build_app(args) -> FastAPI:
             "script_file": script_path.name}, ensure_ascii=False))
         for m in bus.snapshot():
             await sock.send_text(json.dumps(m, ensure_ascii=False))
+        if inserts.pending:
+            await sock.send_text(json.dumps({"type": "insert_proposal", "proposal": inserts.pending},
+                                            ensure_ascii=False))
         bus.clients.add(sock)
         try:
             while True:
@@ -143,8 +150,24 @@ def build_app(args) -> FastAPI:
                 t = msg.get("type")
                 if t == "viewport":
                     engine.set_viewport(msg.get("visible") or [], msg.get("reading"))
+                    inserts.reading = engine.reading
                     if rec and engine.reading:
                         rec.reading(engine.reading)
+                elif t == "insert_now":
+                    await inserts.trigger_now()
+                elif t == "insert_accept":
+                    seg, before = inserts.accept(msg.get("id"))
+                    if seg:
+                        if rec:
+                            rec.log("insert", segment=seg, before=before)
+                        await bus.publish({"type": "script_insert", "segment": seg, "before": before,
+                                           "script": script.to_client()})
+                        await inserts.status()
+                elif t == "insert_dismiss":
+                    inserts.dismiss(msg.get("id"))
+                    if rec:
+                        rec.log("insert_dismiss", id=str(msg.get("id", ""))[:20])
+                    await inserts.status()
                 elif t == "manual_comment":
                     text = str(msg.get("text", "")).strip()[:200]
                     if text:

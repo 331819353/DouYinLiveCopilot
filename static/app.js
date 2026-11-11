@@ -30,14 +30,16 @@ let viewportTimer = null;
 let lastViewport = "";
 
 // ---------------- WebSocket ----------------
+let retryMs = 1000;
 function connect() {
   ws = new WebSocket(`ws://${location.host}/ws`);
   ws.onmessage = (e) => handle(JSON.parse(e.data));
   ws.onclose = () => {
     setLamp("#src", "bad", "服务断开", "本机服务已断开，正在重连");
-    setTimeout(connect, 2000);
+    setTimeout(connect, retryMs);
+    retryMs = Math.min(retryMs * 2, 10000); // 服务长时间不在时，重连逐步放慢
   };
-  ws.onopen = () => { lastViewport = ""; sendViewport(); };
+  ws.onopen = () => { retryMs = 1000; lastViewport = ""; sendViewport(); };
 }
 function send(msg) { if (ws?.readyState === 1) ws.send(JSON.stringify(msg)); }
 
@@ -54,6 +56,13 @@ function handle(m) {
     case "source": showSource(m); break;
     case "reply_status": showReply(m); break;
     case "stats": $("#online").textContent = `在线 ${m.online ?? "-"}`; break;
+    case "insert_proposal": addProposal(m.proposal); break;
+    case "insert_status": showInsertStatus(m); break;
+    case "insert_expired": document.querySelector(`.card[data-id="${CSS.escape(m.id)}"]`)?.remove(); break;
+    case "script_insert":
+      renderScript(m.script); // 插入段只会在当前段之后，已读内容的位置不变
+      document.querySelector(`.card.insert[data-seg="${CSS.escape(m.segment.id)}"]`)?.remove();
+      break;
   }
 }
 
@@ -62,9 +71,11 @@ function renderScript(data) {
   script = data;
   const track = $("#script-track");
   track.replaceChildren();
+  segIndex = {};
   const paras = [];
   data.segments.forEach((seg, i) => {
-    track.appendChild(el("h2", null, `第 ${i + 1} 段 · ${seg.title}`));
+    const h = el("h2", seg.inserted ? "inserted" : null, `第 ${i + 1} 段 · ${seg.title}`);
+    track.appendChild(h);
     for (const p of seg.paragraphs) {
       segIndex[p.id] = i;
       const node = el("p", `para ${p.type || ""}`);
@@ -77,6 +88,10 @@ function renderScript(data) {
       paras.push(node);
     }
   });
+  if (scroller) {  // 再次渲染（插入段后）：沿用现有滚动位置
+    scroller.setParagraphs(paras);
+    return;
+  }
   const cpm = Number(store.get("cpm", 240)) || 240;
   scroller = new Scroller($("#script-viewport"), track, {
     cpm,
@@ -97,6 +112,7 @@ function onCurrentParagraph(id) {
   if (i !== currentSeg) {
     currentSeg = i;
     segEnteredAt = Date.now();
+    document.querySelectorAll(".card.insert").forEach((n) => n._checkStale?.());
   }
   scheduleViewport();
 }
@@ -305,12 +321,86 @@ function addCard(card) {
 function trimCards() {
   const now = Date.now();
   const free = [...cardsBox.querySelectorAll(".card")].filter(
-    (n) => !n.classList.contains("pinned") && !n.classList.contains("open") && !n.matches(":hover"));
+    (n) => !n.classList.contains("pinned") && !n.classList.contains("open") && !n.matches(":hover")
+      && !n.classList.contains("insert"));  // 插入段提案由服务端控制过期
   free.forEach((n, i) => {
     if (i >= MAX_CARDS || now - Number(n.dataset.t) > CARD_TTL_MS) n.remove();
   });
 }
 setInterval(trimCards, 5000);
+
+// ---------------- 插入段 ----------------
+const TRUTH_LABEL = { lived: "亲历", fictional: "虚构", opinion: "观点" };
+const insertBtn = $("#insert-btn");
+insertBtn.addEventListener("click", () => send({ type: "insert_now" }));
+
+function addProposal(p) {
+  if (document.querySelector(`.card[data-id="${CSS.escape(p.id)}"]`)) return;
+  $("#cards-empty")?.remove();
+  const node = el("div", "card insert");
+  node.dataset.id = p.id;
+  node.dataset.seg = p.segment.id;
+  const meta = el("div", "meta");
+  meta.appendChild(el("span", "kind", "建议插入段"));
+  meta.appendChild(el("span", null, `约 ${Math.round(p.segment.planned_sec / 60)} 分钟 · ${p.segment.paragraphs.length} 段`));
+  node.appendChild(meta);
+  node.appendChild(el("div", "reply", p.theme));
+  if (p.why) node.appendChild(el("div", "src", p.why));
+  node.appendChild(el("div", "src", `观众在说：${p.comments.slice(0, 3).join(" / ")}`));
+  for (const s of p.issues || []) node.appendChild(el("div", "issue", `⚠ ${s}`));
+  const stale = el("div", "issue stale");
+  stale.hidden = true;
+  node.appendChild(stale);
+  node._checkStale = () => {  // 写这段时所在的段落和现在不同，提醒主播检查衔接
+    const now = script?.segments[currentSeg];
+    stale.hidden = !p.written_at || !now || now.id === p.written_at;
+    stale.textContent = `⚠ 写这段时你在「${p.written_at_title}」，现在已到「${now?.title || ""}」，插入前留意衔接`;
+  };
+  node._checkStale();
+
+  const more = el("div", "more");
+  for (const q of p.segment.paragraphs) {
+    const line = el("p");
+    line.appendChild(el("span", "label", TRUTH_LABEL[q.truth_level] || ""));
+    line.appendChild(document.createTextNode(q.text));
+    more.appendChild(line);
+  }
+  node.appendChild(more);
+
+  const actions = el("div", "actions");
+  const btn = (label, fn, cls) => {
+    const b = el("button", cls, label);
+    b.type = "button";
+    b.addEventListener("click", fn);
+    actions.appendChild(b);
+    return b;
+  };
+  const holdKey = `insert:${p.id}`;
+  const preview = btn("预览", () => {
+    const open = node.classList.toggle("open");
+    preview.textContent = open ? "收起" : "预览";
+    if (open) scroller?.hold(holdKey); else scroller?.release(holdKey);
+  }, "primary");
+  btn("插入到下一段前", () => {
+    scroller?.release(holdKey);
+    send({ type: "insert_accept", id: p.id });
+  });
+  btn("忽略", () => {
+    scroller?.release(holdKey);
+    send({ type: "insert_dismiss", id: p.id });
+    node.remove();
+  });
+  node.appendChild(actions);
+  cardsBox.prepend(node);
+}
+
+function showInsertStatus(m) {
+  const busy = m.state === "busy";
+  insertBtn.disabled = m.state !== "idle";
+  insertBtn.textContent = busy ? "插入段生成中…" : m.state === "pending" ? "有待选插入段" : "生成插入段";
+  insertBtn.title = m.note || (m.state === "disabled" ? "AI 未启用" : "根据最近 3 分钟的评论生成一段临时内容");
+  if (m.note && m.state !== "disabled") $("#ai-note").textContent = m.note;
+}
 
 // ---------------- 状态 ----------------
 function setLamp(sel, level, text, title) {

@@ -21,7 +21,7 @@ class Bus:
             self.recent_comments.append(msg)
         elif t == "card":
             self.recent_cards.append(msg)
-        elif t in ("source", "reply_status", "stats"):
+        elif t in ("source", "reply_status", "stats", "insert_status"):
             self.status[t] = msg
         data = json.dumps(msg, ensure_ascii=False)
         for ws in list(self.clients):

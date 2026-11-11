@@ -30,6 +30,12 @@ def load(session_dir: Path):
                 events.append(json.loads(line))
             except json.JSONDecodeError:
                 pass  # 进程被强行结束时，最后一行可能不完整
+    # 直播中插入的段落：按记录放回文案快照里对应的位置
+    for e in events:
+        if e["type"] == "insert" and e.get("segment"):
+            segs = script["segments"]
+            idx = next((k for k, s in enumerate(segs) if s["id"] == e.get("before")), len(segs))
+            segs.insert(idx, e["segment"])
     return meta, script, events
 
 
