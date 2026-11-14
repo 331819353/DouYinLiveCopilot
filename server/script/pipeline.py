@@ -35,7 +35,8 @@ def _int(v, default=0):
 
 # ---------------- 1. 选题 ----------------
 
-async def propose_topics(llm: JsonLLM, profile: dict, hot: list[dict], n: int = 5) -> list[dict]:
+async def propose_topics(llm: JsonLLM, profile: dict, hot: list[dict], n: int = 5,
+                         minutes: int = 120, brief: dict | None = None) -> list[dict]:
     hot_txt = "\n".join(
         f"- [{h['source']}] {h['title']}" + (f"（热度 {h['popularity']}）" if h.get("popularity") else "")
         for h in hot[:80]) or "（本次没有热榜，请从主播的关注领域出发，选常青话题）"
@@ -45,9 +46,13 @@ async def propose_topics(llm: JsonLLM, profile: dict, hot: list[dict], n: int = 
 # 今日热榜（只有标题，细节未核实）
 {hot_txt}
 
+# 创作偏好（主题与表达参考，服从真实性和内容规则）
+{json.dumps(brief or {}, ensure_ascii=False)}
+
 # 任务
-提出 {n} 个适合这位主播讲两小时的直播选题。
+提出 {n} 个适合这位主播讲 {minutes} 分钟的直播选题。
 - 选题必须落在主播的关注领域里，能用上真实素材；热榜里和领域相关的话题可以作为引子，不相关的不要硬蹭。
+- 有本场人设、观点、听众或目标时，按本场创作偏好选题；没有可用的真实素材时，就选适合讲观点或方法的主题。
 - 标题要有悬念、让人想留下来，但不能夸大，不能暗示丑闻或两性关系。
 - 标题必须如实：只用素材原意，不能把两件素材拼在一起制造“以为是 A，其实是 B”的假反转。
 - 话题要能撑起多个故事，能持续引发讨论。
@@ -68,7 +73,7 @@ async def propose_topics(llm: JsonLLM, profile: dict, hot: list[dict], n: int = 
 
 # ---------------- 2. 大纲 ----------------
 
-async def make_outline(llm: JsonLLM, profile: dict, topic: dict, minutes: int) -> dict:
+async def make_outline(llm: JsonLLM, profile: dict, topic: dict, minutes: int, log=None) -> dict:
     nseg = max(3, round(minutes / 15))
     user = f"""# 主播档案
 {persona_text(profile, with_materials=True)}
@@ -79,6 +84,7 @@ async def make_outline(llm: JsonLLM, profile: dict, topic: dict, minutes: int) -
 # 任务
 把这个选题拆成 {nseg} 段，直播总时长 {minutes} 分钟，各段 planned_sec 加起来等于 {minutes * 60}。
 - 第一段抛出全场大悬念，最后一段兑现；中间每段都要有自己的小悬念和故事。
+- 结合选题里的创作偏好设计主线、论点及互动方式。本场人设仅用于角色表达，亲历只能依据真实素材。
 - 尽量把真实素材分配到不同段落；没有素材支撑的地方用观点或明确标注的虚构故事。
 - 每段写清楚目标、3～6 条要点，以及引出下一段的一句话。
 
@@ -89,12 +95,22 @@ async def make_outline(llm: JsonLLM, profile: dict, topic: dict, minutes: int) -
     "summary": "一句话概括", "beats": ["要点"], "materials": ["素材 id"], "teaser": "引出下一段的一句话"}}]}}"""
     outline = await llm.json(rules_text(), user)
     # 节目设定会作为背景交给实时回复，里面的事实也必须出自素材
-    issues = check_outline_numbers(outline, profile) + await review_outline(llm, profile, outline)
+    if log:
+        log("审校大纲")
+    model_issues = await review_outline(llm, profile, outline)
+    issues = check_outline_numbers(outline, profile) + model_issues
     if issues:
+        if log:
+            log(f"大纲发现 {len(issues)} 条审校提示，正在调整")
         fix = (f"{user}\n\n# 上一版大纲\n{json.dumps(outline, ensure_ascii=False)}\n\n# 审校发现的问题\n"
                + "\n".join(f"- {s}" for s in issues) + "\n\n请修改后重新输出完整大纲，格式不变。")
         outline = await llm.json(rules_text(), fix)
-        outline["outline_issues_fixed"] = issues
+        # 重写后重新对照素材，原稿的问题是否已解决要由审校确认。
+        if log:
+            log("复审调整后的大纲")
+        model_issues = await review_outline(llm, profile, outline)
+    outline["outline_model_issues"] = model_issues
+    outline["outline_issues"] = check_outline_numbers(outline, profile) + model_issues
     segs = outline.get("segments") or []
     if not segs:
         raise ValueError("大纲里没有段落")
@@ -147,18 +163,31 @@ def _segment_context(profile, outline, i):
     seg = outline["segments"][i]
     overview = "\n".join(f"{k + 1}. {s['title']}：{s.get('summary', '')}"
                          for k, s in enumerate(outline["segments"]))
-    return f"""# 主播档案（含真实素材）
+    context = f"""# 主播档案（含真实素材）
 {persona_text(profile, with_materials=True)}
 
 # 节目圣经
 {outline.get('bible', '')}
 大悬念：{outline.get('big_hook', '')}（答案：{outline.get('payoff', '')}，只能在最后一段揭晓）
 
+# 创作偏好（表达参考，服从真实性和内容规则）
+{json.dumps(outline.get('brief', {}), ensure_ascii=False)}
+
 # 全场大纲
 {overview}
 
 # 本段：第 {i + 1}/{len(outline['segments'])} 段
 {json.dumps(seg, ensure_ascii=False)}"""
+    # 逐章模式提供已确认的事实与衔接，命令行并行模式仍只使用大纲。
+    if outline.get("previous_chapters"):
+        context += ("\n\n# 已确认章节（只用于承接，避免重复讲述）\n"
+                    + json.dumps(outline["previous_chapters"], ensure_ascii=False))
+    if outline.get("chapter_feedback"):
+        context += ("\n\n# 主播对本章的最新要求\n"
+                    "要求按提交顺序排列。互相矛盾时，以最新要求为准；原大纲安排可调整，"
+                    "仍须遵守真实性、内容规则，并和已确认章节衔接。"
+                    "\n" + json.dumps(outline["chapter_feedback"], ensure_ascii=False))
+    return context
 
 
 PARA_SCHEMA = """只输出 json：
@@ -173,7 +202,7 @@ async def write_segment(llm, profile, outline, i, cpm) -> tuple[list[dict], int]
 
 # 任务
 写这一段的口播文案，总字数约 {target} 字（允许上下浮动 15%）。
-按要点顺序展开，结尾用 teaser 引出下一段（最后一段则兑现大悬念并收尾）。
+按要点和本章最新要求展开，结尾自然引出下一章（最后一章则兑现开场承诺并收尾）。
 
 {PARA_SCHEMA}"""
     data = await llm.json(rules_text(), user)
@@ -248,30 +277,39 @@ async def rewrite_segment(llm, profile, outline, i, paras, issues, target) -> li
 {chr(10).join('- ' + s for s in issues)}
 
 # 任务
-修改原稿，解决上面所有问题，其余内容尽量保持不变，总字数约 {target} 字。
+根据本章最新要求和上述审校意见修改原稿，其余内容尽量保持不变，总字数约 {target} 字。
 
 {PARA_SCHEMA}"""
     data = await llm.json(rules_text(), user)
     return data.get("paragraphs", [])
 
 
-async def produce_segment(llm, profile, outline, i, cpm, sem, log) -> dict:
-    async with sem:
-        seg = outline["segments"][i]
-        mids = {m["id"] for m in profile.get("materials", [])}
-        log(f"第 {i + 1} 段「{seg['title']}」写作中")
+async def produce_segment(llm, profile, outline, i, cpm, log, original=None) -> dict:
+    seg = outline["segments"][i]
+    mids = {m["id"] for m in profile.get("materials", [])}
+    chapter = f"第 {i + 1} 章"
+    rewritten = original is not None
+    if original is None:
+        log(f"{chapter}「{seg['title']}」写作中")
         paras, target = await write_segment(llm, profile, outline, i, cpm)
-        issues = check_segment(paras, mids, target) + await review_segment(llm, profile, outline, i, paras)
-        rewritten = False
-        if issues:
-            log(f"第 {i + 1} 段审校发现 {len(issues)} 个问题，重写一次")
-            paras = await rewrite_segment(llm, profile, outline, i, paras, issues, target)
-            issues = check_segment(paras, mids, target)  # 重写后只做程序检查
-            rewritten = True
-        log(f"第 {i + 1} 段完成：{sum(len(p.get('text', '')) for p in paras)} 字"
-            + (f"，仍有 {len(issues)} 个问题需人工看" if issues else ""))
-        return {"paragraphs": paras, "target_chars": target, "rewritten": rewritten,
-                "open_issues": issues}
+    else:
+        log(f"{chapter}按意见重写")
+        target = original["target_chars"]
+        paras = await rewrite_segment(llm, profile, outline, i, original["paragraphs"],
+                                      ["执行主播对本章的最新要求"], target)
+    log(f"{chapter}审校中")
+    model_issues = await review_segment(llm, profile, outline, i, paras)
+    issues = check_segment(paras, mids, target) + model_issues
+    if issues:
+        log(f"{chapter}发现 {len(issues)} 条审校提示，正在调整")
+        paras = await rewrite_segment(llm, profile, outline, i, paras, issues, target)
+        # 调整后仍须复审，主播意见也继续留在提示词里。
+        log(f"{chapter}复审中")
+        model_issues = await review_segment(llm, profile, outline, i, paras)
+        issues = check_segment(paras, mids, target) + model_issues
+        rewritten = True
+    return {"paragraphs": paras, "target_chars": target, "rewritten": rewritten,
+            "open_issues": issues, "model_issues": model_issues}
 
 
 # ---------------- 5. 组装与计时 ----------------
@@ -291,9 +329,11 @@ def assemble(outline, results, topic, meta) -> dict:
         segments.append({"id": f"s{i}", "title": seg["title"], "planned_sec": seg["planned_sec"],
                          "summary": seg.get("summary", ""), "paragraphs": paras,
                          "review": {"chars": chars, "target_chars": res["target_chars"],
-                                    "rewritten": res["rewritten"], "open_issues": res["open_issues"]}})
+                                    "rewritten": res["rewritten"], "open_issues": res["open_issues"],
+                                    "model_issues": res["model_issues"]}})
     return {"title": outline.get("title") or topic.get("title"), "bible": outline.get("bible", ""),
             "big_hook": outline.get("big_hook", ""), "payoff": outline.get("payoff", ""),
+            "outline_issues": outline["outline_issues"], "outline_model_issues": outline["outline_model_issues"],
             "generated": meta | {"topic": topic}, "segments": segments}
 
 
@@ -314,19 +354,37 @@ def timing_report(script: dict, cpm: int) -> list[str]:
 def save(script: dict) -> Path:
     OUT_DIR.mkdir(parents=True, exist_ok=True)
     slug = re.sub(r"[^\w一-鿿]+", "", script["title"])[:20] or "script"
-    path = OUT_DIR / f"{time.strftime('%Y%m%d-%H%M%S')}_{slug}.json"
-    path.write_text(json.dumps(script, ensure_ascii=False, indent=2), encoding="utf-8")
+    # 时间戳细化到纳秒，避免命令行和工作台同时生成同名文案时覆盖。
+    path = OUT_DIR / f"{time.strftime('%Y%m%d-%H%M%S')}-{time.time_ns() % 1000000000:09d}_{slug}.json"
+    tmp = path.with_suffix(".tmp")
+    tmp.write_text(json.dumps(script, ensure_ascii=False, indent=2), encoding="utf-8")
+    tmp.replace(path)  # 列表和审定页只读取已经完整写入的 JSON
     return path
 
 
 async def generate(profile, topic, minutes, cpm, llm, log, parallel=4) -> dict:
     t0 = time.time()
     log("生成大纲")
-    outline = await make_outline(llm, profile, topic, minutes)
+    outline = await make_outline(llm, profile, topic, minutes, log)
+    outline["brief"] = topic.get("brief", {})
     log(f"大纲完成：{len(outline['segments'])} 段 · {outline.get('title', '')}")
     sem = asyncio.Semaphore(parallel)
-    results = await asyncio.gather(*(produce_segment(llm, profile, outline, i, cpm, sem, log)
-                                     for i in range(len(outline["segments"]))))
+
+    async def write(i):
+        async with sem:
+            result = await produce_segment(llm, profile, outline, i, cpm, log)
+            log(f"第 {i + 1} 章完成")
+            return result
+
+    tasks = [asyncio.create_task(write(i)) for i in range(len(outline["segments"]))]
+    try:
+        results = await asyncio.gather(*tasks)
+    finally:
+        # 某段失败或服务关闭时，收回其他分段调用，避免后台继续改写进度。
+        for task in tasks:
+            if not task.done():
+                task.cancel()
+        await asyncio.gather(*tasks, return_exceptions=True)
     meta = {"created_at": time.strftime("%Y-%m-%d %H:%M:%S"), "minutes": minutes, "cpm": cpm,
             "model": llm.cfg["model"], "seconds": round(time.time() - t0)}
     return assemble(outline, results, topic, meta)

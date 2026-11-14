@@ -24,14 +24,15 @@ def cleanup_old():
 
 
 class SessionRecorder:
-    def __init__(self, script_data: dict, script_path, mode: str):
+    def __init__(self, script_data: dict, script_path, mode: str, room: str | None = None):
         cleanup_old()
-        self.dir = SESSIONS / time.strftime("%Y%m%d-%H%M%S")
+        # 页面可在一秒内换稿或换房，仍要为每份文案与房间组合保留独立快照。
+        self.dir = SESSIONS / f"{time.strftime('%Y%m%d-%H%M%S')}-{time.time_ns() % 1000000000:09d}"
         self.dir.mkdir(parents=True, exist_ok=True)
         # 保存一份文案快照：之后文案被修改，复盘仍能对上当时的段落
         (self.dir / "script.json").write_text(json.dumps(script_data, ensure_ascii=False), "utf-8")
         (self.dir / "meta.json").write_text(json.dumps({
-            "started": time.time(), "mode": mode,
+            "started": time.time(), "mode": mode, "room": room,
             "script_file": str(script_path.relative_to(ROOT)) if script_path.is_relative_to(ROOT) else str(script_path),
             "script_title": script_data.get("title", ""),
         }, ensure_ascii=False), "utf-8")

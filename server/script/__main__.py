@@ -71,8 +71,9 @@ async def main_async(args):
     print("\n===== 完成 =====")
     print("\n".join(timing_report(script, args.cpm)))
     u = llm.usage
-    print(f"  模型调用 {u['calls']} 次，用时 {script['generated']['seconds']} 秒，"
-          f"约 ¥{llm.cost_yuan():.2f}（按空闲时段价格）")
+    # OpenAI 等服务未配置人民币价格时，只显示调用次数和耗时。
+    cost = f"，估算 ¥{llm.cost_yuan():.2f}" if llm.cfg.get("price") else ""
+    print(f"  模型调用 {u['calls']} 次，用时 {script['generated']['seconds']} 秒{cost}")
     print(f"\n已保存：{path}\n加载：.venv/bin/python -m server.app --script latest --mock")
 
 

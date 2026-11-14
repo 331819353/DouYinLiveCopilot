@@ -51,11 +51,22 @@ export class Scroller {
     requestAnimationFrame((t) => this.tick(t));
   }
 
-  setParagraphs(elements) {
+  setParagraphs(elements, startOver = false) {
+    const current = !startOver && this.paras.find((p) => p.id === this.currentId);
+    // 换稿时段落 id 可能重复，此时不沿用旧稿的滚动位置。
+    if (startOver) {
+      this.offset = 0;
+      this.currentId = null;
+    }
     this.io.disconnect();
+    this.io.takeRecords();
+    this.visible.clear();
     this.paras = elements.map((el) => ({ el, id: el.dataset.id, top: 0, bottom: 0 }));
     for (const p of this.paras) this.io.observe(p.el);
     this.layout();
+    const updated = current && this.paras.find((p) => p.id === current.id);
+    // 重连补上的插入段可能在前面，补偿高度差，把正在读的文字留在原位。
+    if (updated) this.offset = this.clamp(this.offset + updated.top - current.top);
     this.apply();
   }
 
@@ -86,6 +97,7 @@ export class Scroller {
 
   pauseReason() {
     if (this.locked) return "已锁定暂停，按空格继续";
+    if (this.holds.has("writing-panel")) return "查看章节草稿中";
     if (this.holds.size) return "查看回复卡片中";
     if (this.hover) return "悬停暂停";
     return null;
@@ -97,6 +109,14 @@ export class Scroller {
     if (this.holds.delete(key) && !this.holds.size) this.resumeAt = performance.now() + RESUME_DELAY;
   }
   setSpeed(cpm) { this.cpm = Math.min(400, Math.max(120, cpm)); }
+
+  jumpTo(id) {
+    const p = this.paras.find((paragraph) => paragraph.id === id);
+    if (!p) return;
+    // 跳转把章首放到阅读线，让继续播放和回复引用使用同一位置。
+    this.offset = this.clamp(p.top - Math.floor(this.viewport.clientHeight * READ_LINE) + 1);
+    this.apply();
+  }
 
   clamp(v) {
     const max = this.track.scrollHeight - this.viewport.clientHeight;

@@ -3,55 +3,360 @@
 <head>
   <meta charset="utf-8">
   <meta name="viewport" content="width=device-width, initial-scale=1">
-  <title>直播提词助手</title>
+  <title>抖音直播工作台</title>
+  <link rel="stylesheet" href="/static/workspace.css">
   <link rel="stylesheet" href="/static/app.css">
+  <link rel="stylesheet" href="/static/model-settings.css">
 </head>
 <body>
   <header id="bar">
-    <span id="clock" title="开播计时">00:00:00</span>
-    <span id="seg" title="当前段落与计划剩余时间">-</span>
-    <span id="speed" title="按 + / - 调整">240 字/分</span>
-    <span id="online">在线 -</span>
-    <span id="src" class="lamp" title="">采集 -</span>
-    <span id="ai" class="lamp" title="">AI -</span>
-    <a id="approval" class="lamp warn" href="/review" target="_blank" hidden>文案未审定</a>
-    <span id="keys">空格 锁定暂停 · + / - 调速 · 悬停文案暂停</span>
+    <div class="brand"><span class="brand-mark" aria-hidden="true"></span><h1>抖音直播工作台</h1></div>
+    <div class="service-bar" aria-label="工作台状态">
+      <span id="online">在线 —</span>
+      <span id="src" class="lamp">采集 —</span>
+      <span id="ai" class="lamp">AI —</span>
+      <button class="control" id="model-settings-open" type="button" aria-haspopup="dialog">模型设置</button>
+      <a class="control" id="current-review" href="/review" target="_blank" rel="noopener">文案库</a>
+    </div>
   </header>
 
   <main>
-    <section id="script-pane" aria-label="直播文案">
-      <div id="script-viewport">
-        <div id="script-track"></div>
-        <div id="reading-line" aria-hidden="true"></div>
-        <div id="pause-badge" hidden></div>
+    <section id="script-pane" aria-label="文案工作区" data-view="read">
+      <div class="script-head">
+        <nav class="view-switch" aria-label="文案工作区视图">
+          <button class="view-option" id="config-toggle" type="button" aria-controls="script-config" aria-pressed="false">创作配置</button>
+          <button class="view-option" id="job-toggle" type="button" aria-controls="job-panel" aria-pressed="false" disabled>章节与日志</button>
+          <button class="view-option" id="read-toggle" type="button" aria-controls="prompter" aria-pressed="true">提词演示</button>
+        </nav>
+        <p id="job-note" class="form-note" role="status" hidden></p>
+      </div>
+      <div class="script-stage">
+      <!-- 三个视图共用左侧区域，切换视图时保留创作配置和提词位置。 -->
+      <div id="script-config" class="stage-view" hidden>
+        <header class="stage-heading">
+          <h2>本场怎么讲</h2>
+          <p>设定直播主题、说话的人和想传达的观点。</p>
+        </header>
+        <form id="generate-form">
+          <fieldset id="generate-fields" disabled>
+            <legend class="sr-only">文案生成配置</legend>
+            <div class="config-grid">
+              <label>选题方式
+                <select name="topic_mode">
+                  <option value="custom">自定主题</option>
+                  <option value="auto">按主播档案自动选题</option>
+                </select>
+              </label>
+              <label class="topic-field">直播主题
+                <input name="topic" maxlength="100" required placeholder="例如：第一次开播">
+              </label>
+              <label class="brief-field">本场人设
+                <textarea name="persona" maxlength="500" rows="2" placeholder="例如：有实操经验的自学教练，说话直接"></textarea>
+              </label>
+              <label class="brief-field">观点偏向
+                <textarea name="stance" maxlength="500" rows="2" placeholder="例如：先做小项目，再决定要不要买课"></textarea>
+              </label>
+              <label class="brief-field">目标观众
+                <input name="audience" maxlength="200" placeholder="例如：零基础的上班族">
+              </label>
+              <label class="brief-field">直播目标
+                <input name="goal" maxlength="240" placeholder="例如：带观众完成第一个练习">
+              </label>
+              <label>计划时长
+                <select name="minutes">
+                  <option value="5">5 分钟</option>
+                  <option value="15" selected>15 分钟</option>
+                  <option value="30">30 分钟</option>
+                  <option value="60">60 分钟</option>
+                  <option value="120">120 分钟</option>
+                </select>
+              </label>
+              <label>口播语速
+                <input type="number" name="cpm" min="120" max="400" step="1" value="240" required>
+                <span class="field-unit">字/分钟</span>
+              </label>
+              <label>表达风格
+                <select name="tone">
+                  <option value="natural">自然聊天</option>
+                  <option value="story">故事叙述</option>
+                  <option value="practical">干货讲解</option>
+                </select>
+              </label>
+              <label class="notes-field">文案模型
+                <select name="provider" aria-describedby="model-note">
+                  <option value="">使用默认模型</option>
+                </select>
+                <span id="model-note" class="form-note" role="status"></span>
+              </label>
+            </div>
+            <details class="config-extra">
+              <summary>真实素材与其他要求</summary>
+              <div class="config-grid">
+                <label class="notes-field">本场真实素材（每行一条）
+                  <textarea name="materials" maxlength="2600" rows="3" placeholder="例如：我用公开教程做了一个读书笔记工具"></textarea>
+                </label>
+                <label class="checkbox-line"><input name="use_profile_materials" type="checkbox"> 同时使用本地主播档案的真实素材</label>
+                <label class="brief-field">避开话题
+                  <textarea name="avoid" maxlength="300" rows="2" placeholder="例如：不推荐具体付费课程"></textarea>
+                </label>
+                <label class="brief-field">补充要求
+                  <textarea name="notes" maxlength="500" rows="2" placeholder="例如：多举例，每章留一个互动问题"></textarea>
+                </label>
+              </div>
+            </details>
+            <div class="form-footer">
+              <span>生成大纲和第 1 章，确认后继续写。</span>
+              <button id="generate-submit" class="control primary-control" type="submit">开始写第 1 章</button>
+            </div>
+          </fieldset>
+        </form>
+      </div>
+      <section id="prompter" class="stage-view" aria-labelledby="script-heading">
+        <header class="stage-heading reader-head">
+          <div>
+            <p class="read-status"><time id="clock" title="开播计时">00:00:00</time><span id="seg" title="当前段落与计划剩余时间"></span><span id="approval" class="draft-label" hidden></span></p>
+            <h2 id="script-heading"><span id="current-script">正在载入文案…</span></h2>
+          </div>
+          <form id="library-form" aria-label="载入已有文案">
+            <label class="sr-only" for="saved-script">选择文案</label>
+            <select id="saved-script"><option value="@initial">启动时使用的文案</option></select>
+            <button class="control" type="submit">载入</button>
+          </form>
+          <p class="form-note" id="library-note" role="status" hidden></p>
+        </header>
+        <div id="script-viewport">
+          <div id="script-track"></div>
+          <div id="reading-line" aria-hidden="true"></div>
+          <div id="pause-badge" hidden></div>
+        </div>
+        <footer class="reader-controls">
+          <button class="control primary-control" id="play-toggle" type="button" disabled>暂停提词</button>
+          <div class="speed-controls" aria-label="提词语速">
+            <button class="control" id="speed-down" type="button" aria-label="降低语速" disabled>−</button>
+            <output id="speed">240 字/分</output>
+            <button class="control" id="speed-up" type="button" aria-label="提高语速" disabled>+</button>
+          </div>
+          <label class="sr-only" for="reader-jump">跳转段落</label>
+          <select id="reader-jump" disabled><option value="">跳转段落</option></select>
+        </footer>
+      </section>
+      <section id="job-panel" class="stage-view" aria-labelledby="job-title" hidden>
+        <header class="stage-heading job-heading">
+          <div>
+            <h2 id="job-title">逐章写稿</h2>
+            <p class="form-note" id="job-count"></p>
+          </div>
+          <div class="work-actions" id="job-actions" hidden>
+            <a class="control" id="job-review" href="/review" target="_blank" rel="noopener">审定草稿</a>
+            <button class="control primary-control" id="job-load" type="button">载入演示</button>
+          </div>
+        </header>
+        <div id="chapter-layout">
+          <div class="chapter-editor">
+            <div class="chapter-document">
+              <label id="chapter-picker" hidden>查看章节
+                <select id="chapter-select"></select>
+              </label>
+              <details class="chapter-context" id="carry-summary" hidden>
+                <summary>应用到后续章节的意见</summary>
+                <ol id="carry-list"></ol>
+              </details>
+              <div id="chapter-preview"></div>
+            </div>
+            <form id="chapter-form" hidden>
+              <label for="chapter-feedback">修改意见</label>
+              <textarea id="chapter-feedback" rows="3" maxlength="1000" placeholder="例如：把术语改成口语，用实际操作解释"></textarea>
+              <p class="form-note" id="feedback-hint">重写会修改本章；继续写时，意见只用于后续章节。</p>
+              <label class="checkbox-line" id="chapter-carry-wrap"><input id="chapter-carry" type="checkbox"> 重写时也把意见用于后续章节</label>
+              <div class="work-actions chapter-actions">
+                <button class="control" type="submit" value="rewrite" id="chapter-rewrite">按意见重写本章</button>
+                <button class="control primary-control" type="submit" value="next" id="chapter-next">确认本章并继续</button>
+                <button class="control primary-control" type="submit" value="finish" id="chapter-finish" hidden>确认并保存完整草稿</button>
+              </div>
+            </form>
+            <div class="work-actions job-recovery">
+              <button class="control primary-control" id="job-retry" type="button" hidden>重试上一步</button>
+              <button class="control" id="job-end" type="button" hidden>结束写稿</button>
+            </div>
+            <p class="form-note" id="chapter-error" role="alert" hidden></p>
+          </div>
+          <section class="job-journal" aria-labelledby="journal-title">
+            <h3 id="journal-title">生成日志</h3>
+            <p class="form-note" id="job-elapsed"></p>
+            <ol id="job-logs" tabindex="0" aria-label="生成日志记录"></ol>
+          </section>
+        </div>
+      </section>
       </div>
     </section>
 
-    <aside>
+    <aside class="interaction-sidebar" aria-label="直播互动">
+      <header class="room-head">
+        <div class="room-title">
+          <h2>直播互动</h2>
+          <span id="room-current">未连接房间</span>
+        </div>
+        <form id="room-form">
+          <label for="room-input">抖音房间号</label>
+          <div class="room-fields">
+            <input id="room-input" autocomplete="off" spellcheck="false" required maxlength="300"
+                   placeholder="房间号或直播间链接" aria-describedby="room-note">
+            <button class="control primary-control" id="room-connect" type="submit" disabled>连接</button>
+            <button class="control" id="room-stop" type="button" hidden>断开</button>
+          </div>
+        </form>
+        <p class="form-note" id="room-note" role="status">连接后，评论和解答会一起更新。</p>
+      </header>
       <section id="comments-pane" aria-label="实时评论">
         <div class="pane-head">
-          <span>实时评论</span>
+          <h3>实时评论</h3>
           <button id="insert-btn" type="button" disabled>生成插入段</button>
           <label><input type="checkbox" id="show-filtered"> 显示已过滤</label>
         </div>
-        <div id="comments"></div>
+        <div id="comments"><p class="empty" id="comments-empty">连接房间后，这里会显示实时评论。</p></div>
         <button id="new-pill" type="button" hidden></button>
         <form id="manual" autocomplete="off">
-          <input id="manual-input" maxlength="200" placeholder="手动输入或粘贴评论，回车发送">
+          <input id="manual-input" aria-label="测试评论" maxlength="200" placeholder="输入测试评论" disabled>
+          <button class="control" id="manual-send" type="submit" disabled>提交</button>
         </form>
       </section>
 
-      <section id="cards-pane" aria-label="AI 回复建议">
+      <section id="cards-pane" aria-label="实时评论解答">
         <div class="pane-head">
-          <span>AI 回复建议</span>
+          <h3>实时评论解答</h3>
           <span id="ai-note"></span>
         </div>
         <div id="cards">
-          <p class="empty" id="cards-empty">评论进来后，这里会出现回复建议。</p>
+          <p class="empty" id="cards-empty">AI 回复建议会显示在这里，供主播口播参考。</p>
         </div>
       </section>
     </aside>
   </main>
+
+  <!-- 供应商清单只负责导航；密钥、模型和默认路由各自独立保存。 -->
+  <dialog id="model-settings" class="surface-dialog model-dialog model-registry-dialog" aria-labelledby="model-settings-title">
+    <header class="model-dialog-heading">
+      <div>
+        <h2 id="model-settings-title">模型供应商</h2>
+        <p>管理工作台写稿与实时解答使用的模型和 API 密钥。</p>
+      </div>
+      <button class="control model-close" type="button" data-model-close>关闭</button>
+    </header>
+    <div class="model-registry-body">
+      <div class="model-toolbar">
+        <label class="model-search">
+          <span class="sr-only">搜索供应商或模型</span>
+          <input id="model-search" type="search" placeholder="搜索供应商或模型" autocomplete="off" disabled>
+        </label>
+        <button class="control primary-control" id="model-defaults-open" type="button" aria-haspopup="dialog" disabled>
+          默认模型设置
+        </button>
+      </div>
+      <p id="model-settings-status" class="form-note model-feedback" role="status"></p>
+      <div id="model-registry"></div>
+    </div>
+  </dialog>
+
+  <dialog id="model-defaults" class="surface-dialog model-dialog model-detail-dialog" aria-labelledby="model-defaults-title">
+    <form id="model-defaults-form" autocomplete="off">
+      <header class="model-dialog-heading">
+        <div>
+          <h2 id="model-defaults-title">默认模型设置</h2>
+          <p>新建稿件可单独指定文案模型。直播间解答使用这里设置的模型。</p>
+        </div>
+        <button class="control model-close" type="button" data-model-close>关闭</button>
+      </header>
+      <fieldset class="model-dialog-fields">
+        <legend class="sr-only">选择默认模型</legend>
+        <div class="model-dialog-body">
+          <label>默认文案模型<select name="script" required aria-describedby="model-default-script-note"></select></label>
+          <p id="model-default-script-note" class="form-note"></p>
+          <label>实时解答模型<select name="reply" required aria-describedby="model-default-reply-note"></select></label>
+          <p id="model-default-reply-note" class="form-note"></p>
+          <p id="model-defaults-status" class="form-note model-feedback" role="status"></p>
+        </div>
+        <footer class="model-dialog-actions">
+          <button class="control" type="button" data-model-close>取消</button>
+          <button class="control primary-control" type="submit">保存</button>
+        </footer>
+      </fieldset>
+    </form>
+  </dialog>
+
+  <dialog id="model-key" class="surface-dialog model-dialog model-detail-dialog" aria-labelledby="model-key-title">
+    <form id="model-key-form" autocomplete="off">
+      <header class="model-dialog-heading">
+        <div>
+          <h2 id="model-key-title">API 密钥</h2>
+          <p id="model-key-description"></p>
+        </div>
+        <button class="control model-close" type="button" data-model-close>关闭</button>
+      </header>
+      <fieldset class="model-dialog-fields">
+        <legend class="sr-only">供应商凭据</legend>
+        <div class="model-dialog-body">
+          <label>API 密钥
+            <input id="model-key-input" type="password" autocomplete="new-password" maxlength="4096" required
+              aria-describedby="model-key-status">
+          </label>
+          <p id="model-key-status" class="form-note model-feedback" role="status"></p>
+        </div>
+        <footer class="model-dialog-actions">
+          <button class="control" type="button" data-model-close>取消</button>
+          <button class="control primary-control" type="submit">保存密钥</button>
+        </footer>
+      </fieldset>
+    </form>
+  </dialog>
+
+  <dialog id="model-editor" class="surface-dialog model-dialog model-detail-dialog" aria-labelledby="model-editor-title">
+    <form id="model-editor-form" autocomplete="off">
+      <header class="model-dialog-heading">
+        <div>
+          <h2 id="model-editor-title">添加模型</h2>
+          <p id="model-editor-description"></p>
+        </div>
+        <button class="control model-close" type="button" data-model-close>关闭</button>
+      </header>
+      <fieldset class="model-dialog-fields">
+        <legend class="sr-only">模型信息</legend>
+        <div class="model-dialog-body">
+          <div id="model-catalog-tools">
+            <button class="control" id="model-catalog-load" type="button">获取供应商目录</button>
+            <p id="model-catalog-note" class="form-note model-feedback" role="status"></p>
+          </div>
+          <div id="model-catalog" hidden>
+            <label>搜索目录<input id="model-catalog-search" type="search" placeholder="按模型 ID 筛选"></label>
+            <label>目录结果<select id="model-catalog-select" size="4" aria-describedby="model-catalog-result"></select></label>
+            <p id="model-catalog-result" class="form-note" role="status"></p>
+          </div>
+          <div id="model-compatible-fields" hidden>
+            <label>API 地址
+              <input id="model-base-url" type="url" maxlength="2048" spellcheck="false" autocapitalize="off"
+                placeholder="https://你的服务地址/v1" aria-describedby="model-base-url-hint">
+            </label>
+            <p id="model-base-url-hint" class="form-note">填写服务商提供的 API 基础地址，例如以 /v1 结尾的地址。</p>
+            <label>API 密钥
+              <input id="model-compatible-key" type="password" autocomplete="new-password" maxlength="4096"
+                aria-describedby="model-compatible-key-hint">
+            </label>
+            <p id="model-compatible-key-hint" class="form-note"></p>
+          </div>
+          <label>模型 ID
+            <input id="model-id" maxlength="150" spellcheck="false" required
+              placeholder="手动填写，或从目录选择" aria-describedby="model-editor-note model-test-note">
+          </label>
+          <p id="model-editor-note" class="form-note"></p>
+          <p id="model-test-note" class="form-note model-feedback" role="status"></p>
+          <p id="model-editor-status" class="form-note model-feedback" role="status"></p>
+        </div>
+        <footer class="model-dialog-actions">
+          <button class="control" id="model-test" type="button">测试连接</button>
+          <button class="control primary-control" id="model-add" type="submit">添加模型</button>
+        </footer>
+      </fieldset>
+    </form>
+  </dialog>
 
   <script type="module" src="/static/app.js"></script>
 </body>

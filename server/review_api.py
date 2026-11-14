@@ -1,7 +1,7 @@
 """文案审定接口：列出、读取、保存、审定 data/scripts/ 下的文案。
 
 保存时只接受对已有段落的修改（文字、类型、真实性、素材、删除）和顶层设定，
-不整份覆盖；每次保存都重新跑程序检查，并清除之前的审定状态。
+不整份覆盖；保存会重新跑程序检查，保留模型审校发现供人工复核，并清除审定状态。
 """
 import json
 import re
@@ -41,6 +41,13 @@ def _issue_count(d):
         len(s.get("review", {}).get("open_issues", [])) for s in d.get("segments", []))
 
 
+def _review_profile(data):
+    # 新稿按生成时采用的真实素材核对；历史稿保持沿用本地档案的行为。
+    if "review_profile" in data:
+        return data["review_profile"], False
+    return load_profile()
+
+
 def recheck(data: dict, profile: dict) -> dict:
     mids = {m["id"] for m in profile.get("materials", [])}
     cpm = (data.get("generated") or {}).get("cpm", 240)
@@ -48,9 +55,16 @@ def recheck(data: dict, profile: dict) -> dict:
         review = seg.setdefault("review", {})
         target = review.get("target_chars") or int(seg["planned_sec"] / 60 * cpm * SPEAK_RATIO)
         review["target_chars"] = target
-        review["open_issues"] = check_segment(seg["paragraphs"], mids, target)
+        checks = check_segment(seg["paragraphs"], mids, target)
+        # 老文案把两类问题混存。能从原稿重新算出的才视为程序检查，其余留给人工复核。
+        if "model_issues" not in review:
+            review["model_issues"] = [issue for issue in review.get("open_issues", []) if issue not in checks]
+        review["open_issues"] = list(dict.fromkeys(checks + review["model_issues"]))
         review["chars"] = sum(len(p.get("text", "")) for p in seg["paragraphs"])
-    data["outline_issues"] = check_outline_numbers(data, profile)
+    checks = check_outline_numbers(data, profile)
+    if "outline_model_issues" not in data:
+        data["outline_model_issues"] = [issue for issue in data.get("outline_issues", []) if issue not in checks]
+    data["outline_issues"] = list(dict.fromkeys(checks + data["outline_model_issues"]))
     return data
 
 
@@ -73,8 +87,9 @@ async def list_scripts():
 
 @router.get("/{name}")
 async def get_script(name: str):
-    profile, demo = load_profile()
-    return {"script": _load(_path(name)), "materials": profile.get("materials", []),
+    data = _load(_path(name))
+    profile, demo = _review_profile(data)
+    return {"script": data, "materials": profile.get("materials", []),
             "demo_profile": demo}
 
 
@@ -82,6 +97,8 @@ async def get_script(name: str):
 async def save_script(name: str, body: dict = Body(...)):
     p = _path(name)
     data = _load(p)
+    profile, _ = _review_profile(data)
+    recheck(data, profile)  # 在修改前识别老文案中的程序检查项
     for k in TOP_FIELDS:
         if isinstance(body.get(k), str):
             data[k] = body[k].strip()[:2000]
@@ -115,7 +132,6 @@ async def save_script(name: str, body: dict = Body(...)):
         seg["paragraphs"] = kept
     data.pop("approved_at", None)  # 改过就需要重新审定
     data.pop("approved_open_issues", None)
-    profile, _ = load_profile()
     _save(p, recheck(data, profile))
     return {"script": data}
 
@@ -123,8 +139,9 @@ async def save_script(name: str, body: dict = Body(...)):
 @router.post("/{name}/approve")
 async def approve_script(name: str):
     p = _path(name)
-    profile, _ = load_profile()
-    data = recheck(_load(p), profile)
+    data = _load(p)
+    profile, _ = _review_profile(data)
+    recheck(data, profile)
     data["approved_at"] = time.strftime("%Y-%m-%d %H:%M:%S")
     data["approved_open_issues"] = _issue_count(data)
     _save(p, data)

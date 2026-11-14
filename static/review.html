@@ -4,23 +4,24 @@
   <meta charset="utf-8">
   <meta name="viewport" content="width=device-width, initial-scale=1">
   <title>文案审定</title>
+  <link rel="stylesheet" href="/static/workspace.css">
   <link rel="stylesheet" href="/static/review.css">
 </head>
 <body>
   <aside id="list">
-    <h1>文案审定</h1>
-    <p class="hint">生成的文案在 data/scripts/。开播前通读一遍，确认无误后点“审定通过”。</p>
+    <div class="brand"><span class="brand-mark" aria-hidden="true"></span><h1>文案库</h1></div>
+    <a class="control" href="/">返回工作台</a>
     <div id="scripts"></div>
   </aside>
 
   <main id="editor">
-    <p class="empty" id="placeholder">从左侧选择一份文案。</p>
+    <p class="empty" id="placeholder">选择一份文案进行审定。</p>
     <div id="doc" hidden>
       <div id="toolbar">
         <span id="status"></span>
         <span id="dirty" hidden>有未保存的修改</span>
-        <button id="save" type="button">保存并重新检查</button>
-        <button id="approve" type="button" class="primary">审定通过</button>
+        <button id="save" type="button" class="control">保存并重新检查</button>
+        <button id="approve" type="button" class="control primary-control">审定通过</button>
       </div>
       <p id="demo-warning" class="warn" hidden>当前使用的是演示档案（config/profile.example.yaml），素材对照不是你的真实经历。</p>
       <p id="run-hint" class="hint"></p>

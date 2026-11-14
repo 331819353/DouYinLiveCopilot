@@ -11,6 +11,7 @@ import json
 import time
 from collections import deque
 
+from .config import model_key, route
 from .llm import JsonLLM, LLMError
 from .profile import load_profile, persona_text
 from .script.pipeline import PARA_SCHEMA, TRUTH, TYPES, check_segment, rules_text
@@ -32,23 +33,44 @@ class InsertEngine:
         self.recent: deque = deque(maxlen=200)
         self.reading = None
         self.pending = None          # 待选提案
+        self.task: asyncio.Task | None = None
+        self.resetting = False
         self.busy = False
         self.last_proposal = 0.0
         self.seq = itertools.count(1)
-        self.disabled_reason = None
-        self.detector = self.writer = None
-        if not enabled:
-            self.disabled_reason = "已用 --no-reply 关闭"
-            return
-        try:
-            self.detector = JsonLLM("reply", timeout=30)
-            self.writer = JsonLLM("script", timeout=240)
-        except LLMError as e:
-            self.disabled_reason = str(e)
+        self.allowed = enabled
+        self.refresh_models()
 
-    @property
-    def enabled(self):
-        return self.detector is not None
+    def refresh_models(self):
+        self.disabled_reason = "" if self.allowed else "已用 --no-reply 关闭"
+        if self.allowed:
+            for name in ("reply", "script"):
+                _, cfg = route(name)
+                if not cfg.get("model") or not model_key(cfg["api_key_env"]):
+                    self.disabled_reason = "请在「模型设置」配置文案和实时解答模型"
+                    break
+        self.enabled = not self.disabled_reason
+
+    async def reset(self, *, clear_comments=False, clear_viewport=False):
+        # 换房或换稿时，丢弃旧上下文生成的待选段，并等待正在生成的段退出。
+        self.resetting = True
+        try:
+            if self.task and not self.task.done():
+                self.task.cancel()
+                await asyncio.gather(self.task, return_exceptions=True)
+            self.pending = None
+            self.busy = False
+            self.last_proposal = 0
+            if clear_comments:
+                self.recent.clear()
+            if clear_viewport:
+                self.reading = None
+        finally:
+            self.resetting = False
+
+    def _schedule(self, force):
+        self.busy = True  # 在创建任务前占位，避免自动与手动生成同时启动。
+        self.task = asyncio.create_task(self._attempt(force))
 
     def add(self, c: dict):
         self.recent.append(c)
@@ -61,39 +83,40 @@ class InsertEngine:
         await self.status()
         while True:
             await asyncio.sleep(CHECK_EVERY)
-            if self.pending and time.time() - self.pending["t"] > EXPIRE:
-                await self.bus.publish({"type": "insert_expired", "id": self.pending["id"]})
-                self.pending = None
-                await self.status()
-            if (not self.enabled or self.busy or self.pending
+            await self.expire_pending()
+            if (not self.enabled or self.resetting or self.busy or self.pending
                     or time.time() - self.last_proposal < COOLDOWN):
                 continue
             if len(self._window()) >= MIN_COMMENTS:
-                await self._attempt(force=False)
+                self._schedule(force=False)
 
     async def trigger_now(self):
         if not self.enabled:
             await self.status()
             return
-        if self.busy or self.pending:
+        await self.expire_pending()
+        if self.resetting or self.busy or self.pending:
             return
         if not self._window():
             await self.status("最近 3 分钟没有评论，无法生成插入段")
             return
-        asyncio.create_task(self._attempt(force=True))
+        self._schedule(force=True)
 
     async def _attempt(self, force: bool):
-        self.busy = True
         note = None
-        await self.status("分析评论中…")
+        detector = writer = None
         try:
+            # 每个插入段任务锁定本次配置，后续任务才使用页面保存的新设置。
+            detector = JsonLLM("reply", timeout=30)
+            writer = JsonLLM("script", timeout=240)
+            await self.status("分析评论中…")
             written_at = self.script.segment_at(self.reading)
-            hot = await self._detect(self._window(), force)
+            hot = await self._detect(detector, self._window(), force)
             if not hot:
                 note = "没有发现集中讨论的话题"
                 return
             await self.status(f"正在为「{hot['theme']}」写插入段…")
-            seg, issues = await self._write(hot)
+            seg, issues = await self._write(writer, hot)
             self.last_proposal = time.time()
             self.pending = {"id": f"x{next(self.seq)}", "theme": hot["theme"], "why": hot.get("why", ""),
                             "comments": hot["comments"], "segment": seg, "issues": issues,
@@ -106,10 +129,15 @@ class InsertEngine:
         except Exception as e:  # 网络等错误不影响直播
             note = f"插入段生成失败：{type(e).__name__}"
         finally:
-            self.busy = False
-            await self.status(note)  # 先清除“生成中”，再发状态
+            try:
+                for model in (detector, writer):
+                    if model:
+                        await model.client.close()
+            finally:
+                self.busy = False
+                await self.status(note)  # 先清除“生成中”，再发状态
 
-    async def _detect(self, comments, force):
+    async def _detect(self, detector, comments, force):
         seg = self.script.segment_at(self.reading)
         listing = json.dumps([{"id": f"c_{i + 1}", "text": c["text"]} for i, c in enumerate(comments)],
                              ensure_ascii=False)
@@ -132,7 +160,7 @@ class InsertEngine:
 {need}
 话题必须和本场主题相关，不能是低俗、广告、歧视、谣言或针对具体人的话题。
 只输出 json：{{"hot": true/false, "theme": "话题，15 字内", "comment_ids": ["相关评论 id"], "why": "为什么值得聊，30 字内"}}"""
-        data = await self.detector.json(system, user)
+        data = await detector.json(system, user)
         if not data.get("hot") or not data.get("theme"):
             return None
         idmap = {f"c_{i + 1}": c for i, c in enumerate(comments)}
@@ -140,7 +168,7 @@ class InsertEngine:
         return {"theme": str(data["theme"])[:30], "why": str(data.get("why", ""))[:60],
                 "comments": picked[:8] or list(dict.fromkeys(c["text"] for c in comments[-5:]))}
 
-    async def _write(self, hot):
+    async def _write(self, writer, hot):
         cur = self.script.segment_at(self.reading)
         nxt = self.script.next_segment(self.reading)
         target = int(INSERT_SEC / 60 * INSERT_CPM)
@@ -169,12 +197,12 @@ class InsertEngine:
 
 {PARA_SCHEMA}"""
         system = rules_text()
-        paras = (await self.writer.json(system, user)).get("paragraphs", [])
+        paras = (await writer.json(system, user)).get("paragraphs", [])
         issues = check_segment(paras, mids, target)
         if issues:
             fix = (f"{user}\n\n# 上一版\n{json.dumps({'paragraphs': paras}, ensure_ascii=False)}\n\n"
                    "# 需要修改的问题\n" + "\n".join(f"- {s}" for s in issues))
-            paras = (await self.writer.json(system, fix)).get("paragraphs", [])
+            paras = (await writer.json(system, fix)).get("paragraphs", [])
             issues = check_segment(paras, mids, target)
         sid = f"x{next(self.seq)}"
         clean = []
@@ -198,12 +226,22 @@ class InsertEngine:
         self.pending = None
         return seg, before
 
-    def dismiss(self, proposal_id):
-        if self.pending and self.pending["id"] == proposal_id:
+    def dismiss(self, proposal_id) -> bool:
+        if not self.pending or self.pending["id"] != proposal_id:
+            return False
+        self.pending = None
+        return True
+
+    async def expire_pending(self):
+        if self.pending and time.time() - self.pending["t"] >= EXPIRE:
+            proposal_id = self.pending["id"]
+            # 先清除状态，再通知页面，重连快照与过期事件才能对得上。
             self.pending = None
+            await self.bus.publish({"type": "insert_expired", "id": proposal_id})
+            await self.status()
 
     async def status(self, note=None):
-        state = ("disabled" if not self.enabled else "busy" if self.busy
-                 else "pending" if self.pending else "idle")
+        state = ("busy" if self.busy else "pending" if self.pending
+                 else "idle" if self.enabled else "disabled")
         await self.bus.publish({"type": "insert_status", "state": state,
                                 "note": note or (self.disabled_reason or "")})

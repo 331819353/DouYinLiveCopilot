@@ -6,13 +6,13 @@
 import asyncio
 import itertools
 import json
-import os
 import time
 from collections import deque
 
-from openai import APIConnectionError, APIStatusError, APITimeoutError, AsyncOpenAI
+from openai import APIConnectionError, APIStatusError, APITimeoutError
 
-from ..config import HELP_RESOURCES, PROMPTS, route
+from ..config import HELP_RESOURCES, PROMPTS, filter_words, model_key, route
+from ..llm import model_client
 from ..profile import load_profile, persona_text
 from .schema import parse_output
 
@@ -30,22 +30,14 @@ class ReplyEngine:
     def __init__(self, bus, script, enabled: bool = True):
         self.bus = bus
         self.script = script
-        self.provider, self.cfg = route("reply")
-        key = os.environ.get(self.cfg["api_key_env"], "")
-        self.enabled = enabled and bool(key) and bool(self.cfg.get("model"))
-        if not enabled:
-            self.disabled_reason = "已用 --no-reply 关闭"
-        elif not key:
-            self.disabled_reason = f"{self.cfg['api_key_env']} 未设置，请填写 .env"
-        else:
-            self.disabled_reason = None
-        self.client = AsyncOpenAI(api_key=key, base_url=self.cfg["base_url"], max_retries=0,
-                                  timeout=20) if self.enabled else None
+        self.filter_words = filter_words()
+        self.allowed = enabled
+        self._configure(*route("reply"))
         profile, self.demo_profile = load_profile()
         system = ((PROMPTS / "reply_system.md").read_text("utf-8")
                   .replace("{name}", profile.get("name", "主播"))
                   .replace("{persona}", persona_text(profile, with_materials=True)))
-        self.system = f"{system}\n\n# 节目圣经（全场固定）\n\n{script.bible}"  # 固定前缀，命中缓存
+        self.persona_prompt = system
 
         self.pool: deque = deque()     # 待处理的评论
         self.comments: dict = {}       # id -> 评论，供手动触发和卡片回显
@@ -58,6 +50,58 @@ class ReplyEngine:
         self.latencies: deque = deque(maxlen=50)
         self.card_seq = itertools.count(1)
         self.n = {"calls": 0, "cards": 0, "dropped": 0, "errors": 0}
+        self.tasks: set[asyncio.Task] = set()
+        self.resetting = False
+
+    def _configure(self, provider, cfg):
+        self.provider, self.cfg = provider, cfg
+        key = model_key(cfg["api_key_env"])
+        self.enabled = self.allowed and bool(key) and bool(cfg.get("model"))
+        self.disabled_reason = ("已用 --no-reply 关闭" if not self.allowed else
+                                "请在「模型设置」填写实时解答模型的 ID 和 API 密钥" if not self.enabled else "")
+        self.client = model_client(cfg, key, max_retries=0, timeout=20) if self.enabled else None
+
+    async def reload_model(self):
+        provider, cfg = route("reply")
+        key = model_key(cfg["api_key_env"]) if self.allowed and cfg.get("model") else ""
+        if (provider, cfg, key) == (self.provider, self.cfg, self.client.api_key if self.client else ""):
+            return
+        # 先收回旧模型请求，再替换客户端。评论和当前阅读位置留在同一会话里。
+        self.resetting = True
+        try:
+            tasks = list(self.tasks)
+            for task in tasks:
+                task.cancel()
+            await asyncio.gather(*tasks, return_exceptions=True)
+            old_client = self.client
+            self._configure(provider, cfg)
+            if old_client:
+                await old_client.close()
+        finally:
+            self.resetting = False
+        await self._status("idle" if self.enabled else "disabled")
+
+    async def reset(self, *, clear_comments=False, clear_viewport=False):
+        # 先停掉旧上下文的模型调用，再由工作台清空历史，避免旧卡片晚到。
+        self.resetting = True
+        try:
+            tasks = list(self.tasks)
+            for task in tasks:
+                task.cancel()
+            await asyncio.gather(*tasks, return_exceptions=True)
+            self.pool.clear()
+            self.carded.clear()
+            if clear_comments:
+                self.comments.clear()
+            if clear_viewport:
+                self.set_viewport([], None)
+        finally:
+            self.resetting = False
+
+    def _schedule(self, batch, *, manual=False):
+        task = asyncio.create_task(self._call(batch, manual=manual))
+        self.tasks.add(task)
+        task.add_done_callback(self.tasks.discard)
 
     # ---------- 输入 ----------
     def remember(self, c: dict):
@@ -75,20 +119,25 @@ class ReplyEngine:
 
     async def trigger_now(self, comment_id):
         c = self.comments.get(comment_id)
-        if not c:
+        if not c or c["filtered"] is not None or self.resetting:
             return
         if not self.enabled:
             await self._status("disabled")
             return
+        if not self.visible:
+            await self._status("idle", "请先显示至少一段文案，再生成回复")
+            return
+        if self.tasks:
+            return
         self.carded.discard(comment_id)  # 主播主动要求，允许重新生成
-        asyncio.create_task(self._call([c], manual=True))
+        self._schedule([c], manual=True)
 
     # ---------- 调度 ----------
     async def run(self):
         await self._status("idle" if self.enabled else "disabled")
         while True:
             await asyncio.sleep(1)
-            if not self.enabled or self.inflight or not self.visible:
+            if not self.enabled or self.resetting or self.tasks or not self.visible:
                 continue
             now = time.time()
             while self.pool and now - self.pool[0]["t"] > POOL_TTL:
@@ -109,7 +158,7 @@ class ReplyEngine:
             self.calls.append(now)
             self.last_call = now
             for c in picks:
-                asyncio.create_task(self._call([c]))
+                self._schedule([c])
 
     @staticmethod
     def _pick(pool):
@@ -132,23 +181,26 @@ class ReplyEngine:
                 f"<next_summary>{self.script.next_summary(self.reading)}</next_summary>\n"
                 f"<untrusted_comments>\n{comments}\n</untrusted_comments>\n"
                 "请按系统说明输出 json。")
-        return [{"role": "system", "content": self.system}, {"role": "user", "content": user}]
+        # 切稿后使用新文案的设定，同一份文案仍共用固定前缀。
+        system = f"{self.persona_prompt}\n\n# 节目圣经（全场固定）\n\n{self.script.bible}"
+        return [{"role": "system", "content": system}, {"role": "user", "content": user}]
 
     async def _call(self, batch, manual=False):
         self.inflight += 1
         self.last_call = time.time()
         self.n["calls"] += 1
-        await self._status("busy")
-        visible = list(self.visible)
-        idmap = {f"c_{i + 1}": c for i, c in enumerate(batch)}
-        kwargs = {"model": self.cfg["model"], "messages": self._messages(batch, visible)}
-        if self.cfg.get("json_mode"):
-            kwargs["response_format"] = {"type": "json_object"}
-        if self.cfg.get("extra_body"):
-            kwargs["extra_body"] = self.cfg["extra_body"]
         t0 = time.perf_counter()
         err = None
         try:
+            # 状态广播也可能遇到切换取消，必须与模型调用共用 inflight 清理。
+            await self._status("busy")
+            visible = list(self.visible)
+            idmap = {f"c_{i + 1}": c for i, c in enumerate(batch)}
+            kwargs = {"model": self.cfg["model"], "messages": self._messages(batch, visible)}
+            if self.cfg.get("json_mode"):
+                kwargs["response_format"] = {"type": "json_object"}
+            if self.cfg.get("extra_body"):
+                kwargs["extra_body"] = self.cfg["extra_body"]
             resp = await self.client.chat.completions.create(**kwargs)
         except APITimeoutError:
             err = "模型调用超时，已跳过这一批"
@@ -190,13 +242,20 @@ class ReplyEngine:
             return None
         d = card.model_dump()
         if card.risk == "escalate":
-            # 求助类：不显示模型生成的展开、提问和拉回话术，附上固定的求助资源
-            d.update(expand="", discussion_question="", bridge_back="", help=HELP_RESOURCES)
+            # 求助提醒必须保留。模型措辞命中词库时，改用固定提醒。
+            if any(word in card.reply for word in self.filter_words):
+                d["reply"] = "这条评论可能涉及求助，请主播查看原评论并酌情处理。"
+            d.update(expand="", discussion_question="", bridge_back="", anchor_quote="",
+                     anchor_paragraph_id="", values_note="", help=HELP_RESOURCES)
         else:
             p = self.script.paragraphs.get(card.anchor_paragraph_id)
             if (card.anchor_paragraph_id not in visible or p is None
                     or len(card.anchor_quote) < 6 or card.anchor_quote not in p["text"]):
                 return None
+            # 检查每个生成的文本字段，避免违规词出现在展开或引用里。
+            for field in ("reply", "expand", "discussion_question", "bridge_back", "anchor_quote", "values_note"):
+                if any(word in d[field] for word in self.filter_words):
+                    return None
         for c in cs:
             self.carded.add(c["id"])
         d.pop("comment_ids")

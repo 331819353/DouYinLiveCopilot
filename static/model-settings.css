@@ -1,0 +1,210 @@
+/* 供应商卡片凸起，展开的模型列表凹入；分隔线仅用于表格行和弹窗操作区。 */
+.model-dialog {
+  width: min(780px, calc(100% - 32px));
+  overflow: hidden;
+}
+.model-registry-dialog[open], .model-detail-dialog form {
+  display: flex;
+  flex-direction: column;
+  max-height: calc(100dvh - 32px);
+}
+.model-registry-dialog[open] { min-height: min(540px, calc(100dvh - 32px)); }
+.model-dialog.model-detail-dialog { width: min(460px, calc(100% - 32px)); }
+.model-detail-dialog::backdrop { background: rgb(33 28 62 / 24%); }
+.model-dialog-heading {
+  display: flex;
+  flex: none;
+  justify-content: space-between;
+  align-items: flex-start;
+  gap: 16px;
+  padding: 22px 24px 18px;
+  border-bottom: 1px solid var(--line);
+}
+.model-dialog-heading h2 {
+  margin: 0;
+  font-size: 22px;
+  line-height: 1.35;
+  letter-spacing: -.025em;
+  overflow-wrap: anywhere;
+}
+.model-dialog-heading p {
+  margin: 5px 0 0;
+  color: var(--dim);
+  font-size: 13px;
+  line-height: 1.55;
+  overflow-wrap: anywhere;
+}
+.model-dialog .control {
+  min-height: 44px;
+  font-size: 13px;
+}
+.model-dialog .model-close { min-width: 54px; }
+.model-registry-body, .model-dialog-body { min-height: 0; overflow: auto; }
+.model-registry-body { padding: 18px 24px 24px; }
+.model-toolbar {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 12px;
+}
+.model-search { flex: 1; min-width: 0; max-width: 310px; }
+.model-dialog :is(input, select) {
+  display: block;
+  width: 100%;
+  min-height: 44px;
+}
+.model-dialog input[type="search"] { font-size: 14px; }
+.model-dialog option { padding: 4px; }
+.model-dialog :is(input, select):focus-visible { outline: 2px solid var(--accent); outline-offset: 2px; }
+.model-provider-section { margin-top: 20px; }
+.model-provider-section h3 { margin: 0 0 12px; font-size: 14px; font-weight: 650; }
+.model-provider {
+  border-radius: var(--radius);
+  background: var(--raised);
+  box-shadow: var(--lift);
+}
+.model-provider + .model-provider { margin-top: 14px; }
+.model-provider-head, .model-provider-identity, .model-provider-credentials, .model-provider-actions {
+  display: flex;
+  align-items: center;
+  gap: 10px;
+}
+.model-provider-head {
+  justify-content: space-between;
+  flex-wrap: wrap;
+  min-width: 0;
+  padding: 13px 16px;
+}
+.model-provider-identity { min-width: 0; }
+.model-provider-identity h4, .model-list-row h5 { margin: 0; overflow-wrap: anywhere; }
+.model-provider-identity h4 { font-size: 16px; }
+.model-provider-identity p, .model-id-text { margin: 3px 0 0; color: var(--dim); font-size: 12px; }
+.model-id-text { overflow-wrap: anywhere; }
+.model-provider-mark {
+  display: grid;
+  width: 40px;
+  height: 40px;
+  flex: none;
+  place-items: center;
+  border-radius: 10px;
+  color: var(--accent);
+  background: var(--accent-light);
+  box-shadow: var(--inset-small);
+  font-size: 14px;
+  font-weight: 750;
+}
+.model-provider[data-service="DEEPSEEK_API_KEY"] .model-provider-mark { background: #e1e7ff; color: #3349a6; }
+.model-provider[data-service="OPENAI_API_KEY"] .model-provider-mark { background: #e1efe9; color: var(--ok); }
+.model-provider-credentials { flex-wrap: wrap; }
+.model-key-state {
+  display: inline-flex;
+  align-items: center;
+  gap: 6px;
+  color: var(--warn);
+  font-size: 12px;
+}
+.model-key-state[data-ready="true"] { color: var(--ok); }
+.model-key-state::before {
+  content: "";
+  width: 6px;
+  height: 6px;
+  border-radius: 50%;
+  background: currentColor;
+}
+.model-provider-actions {
+  justify-content: space-between;
+  min-height: 53px;
+  padding: 5px 16px 8px;
+  border-top: 1px solid var(--line);
+}
+.model-dialog :is(.model-toggle, .model-link) {
+  min-width: 0;
+  padding-inline: 10px;
+  color: var(--accent);
+}
+.model-toggle[aria-expanded="true"] { background: var(--well); box-shadow: var(--inset-small); }
+.model-toggle > span:first-child::before {
+  content: "";
+  display: inline-block;
+  width: 6px;
+  height: 6px;
+  margin: 0 7px 1px 2px;
+  border: solid currentColor;
+  border-width: 0 1.5px 1.5px 0;
+  transform: rotate(-45deg);
+}
+.model-toggle[aria-expanded="true"] > span:first-child::before { transform: translateY(-2px) rotate(45deg); }
+.model-count, .model-role {
+  padding: 2px 6px;
+  border-radius: 5px;
+  color: var(--accent);
+  background: var(--accent-light);
+  font-size: 12px;
+}
+.model-list {
+  margin: 0 12px 12px;
+  padding: 0 14px;
+  border-radius: var(--control-radius);
+  background: var(--well);
+  box-shadow: var(--inset);
+  list-style: none;
+}
+/* 隔离折叠外边距，让列表底部留白留在供应商卡片内。 */
+.model-provider:has(.model-list:not([hidden])) { display: flow-root; }
+.model-list-row {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 12px;
+  padding: 9px 0;
+  overflow-wrap: anywhere;
+}
+.model-list-row + .model-list-row { border-top: 1px solid var(--line); }
+.model-list-row > div { min-width: 0; }
+.model-list-row .control { flex-shrink: 0; }
+.model-list-row h5 { font-size: 14px; }
+.model-usage { display: flex; gap: 4px; flex-wrap: wrap; }
+.model-usage:not(:empty) { margin-top: 5px; }
+.model-empty { padding: 25px 0; color: var(--dim); font-size: 14px; }
+.model-dialog-fields {
+  display: flex;
+  flex-direction: column;
+  min-width: 0;
+  min-height: 0;
+  margin: 0;
+  padding: 0;
+  border: 0;
+}
+.model-dialog-body { padding: 16px 24px 24px; }
+.model-dialog-body label { display: grid; gap: 5px; font-size: 13px; font-weight: 600; }
+.model-dialog-body label :is(input, select) { font-size: 16px; font-weight: 400; }
+.model-dialog-body label ~ label, .model-dialog-body div:not([hidden]) + label { margin-top: 14px; }
+.model-dialog-body label + p:not(:empty) { margin-top: 6px; }
+.model-dialog-actions {
+  display: flex;
+  flex: none;
+  flex-wrap: wrap;
+  justify-content: flex-end;
+  gap: 12px;
+  padding: 14px 24px;
+  border-top: 1px solid var(--line);
+}
+.model-dialog-actions .primary-control { min-width: 80px; }
+.model-feedback:not(:empty) { margin-top: 6px; }
+#model-settings-status:not(:empty) { margin-top: 12px; }
+#model-test-note[data-success="true"] { color: var(--ok); }
+#model-catalog { display: grid; gap: 8px; margin-top: 12px; }
+#model-catalog label { margin-top: 0; }
+#model-catalog-select { max-height: 128px; }
+#model-compatible-fields label + p { margin-bottom: 14px; }
+#model-compatible-fields input[readonly], #model-id[readonly] { color: var(--dim); }
+
+@media (max-width: 480px) {
+  .model-dialog-heading, .model-registry-body, .model-dialog-body, .model-dialog-actions { padding-inline: 16px; }
+  .model-dialog-heading { padding-block: 16px; }
+  .model-toolbar { flex-wrap: wrap; gap: 8px; }
+  .model-toolbar .model-search { flex-basis: 100%; max-width: none; }
+  .model-provider-head { padding: 10px 12px; }
+  .model-provider-credentials { flex-direction: column; align-items: flex-end; gap: 5px; margin-left: auto; }
+  .model-list { padding-inline: 12px; }
+}

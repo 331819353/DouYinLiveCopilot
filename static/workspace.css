@@ -1,0 +1,136 @@
+/* 工作台、文案库和弹窗共用左上光源。面板与按钮凸起，输入、列表容器和按下态凹入。 */
+:root {
+  --bg: #e8e7f2;
+  --surface: #ecebf5;
+  --raised: #efedf7;
+  --well: #e7e5f2;
+  --paper: #f3f1fa;
+  --line: #d6d3e9;
+  --text: #211c3e;
+  --dim: #57516e;
+  --accent: #5540a9;
+  --accent-hover: #48338f;
+  --accent-light: #e4ddfa;
+  --accent-ink: #fff;
+  --ok: #20624e;
+  --ok-soft: #dceee7;
+  --warn: #865116;
+  --warn-soft: #f7e9d1;
+  --danger: #a13049;
+  --danger-soft: #fae9ed;
+  --surface-fill: linear-gradient(145deg, #f0eef8, var(--surface) 45%, #e8e6f2);
+  --accent-fill: linear-gradient(145deg, #6550b9, var(--accent) 55%, #483389);
+  --large-shadow: 10px 12px 27px #cbc7df, -8px -8px 23px rgb(255 255 255 / 88%);
+  --lift: 4px 5px 10px #d0cde2, -4px -4px 9px rgb(255 255 255 / 92%);
+  --inset: inset 3px 3px 7px #cecae1, inset -3px -3px 7px rgb(255 255 255 / 85%);
+  --inset-small: inset 2px 2px 4px #d0cce1, inset -2px -2px 4px rgb(255 255 255 / 82%);
+  --accent-lift: 4px 5px 10px #c4badd, -3px -3px 8px rgb(255 255 255 / 82%);
+  --accent-inset: inset 3px 3px 8px #37236f, inset -2px -2px 5px #715ac0;
+  --overlay-shadow: 12px 18px 42px rgb(36 26 73 / 29%), -5px -6px 15px rgb(246 243 255 / 43%);
+  --backdrop: rgb(34 28 61 / 36%);
+  --radius: 16px;
+  --panel-radius: 22px;
+  --control-radius: 12px;
+  color-scheme: light;
+  font-family: -apple-system, "PingFang SC", "Microsoft YaHei", system-ui, sans-serif;
+}
+* { box-sizing: border-box; }
+[hidden] { display: none !important; }
+.sr-only { position: absolute; width: 1px; height: 1px; overflow: hidden; clip-path: inset(50%); }
+html, body { margin: 0; min-height: 100%; }
+body { background: var(--bg); color: var(--text); }
+button, input, select, textarea { font: inherit; color: inherit; }
+button { cursor: pointer; }
+button:disabled { opacity: .65; cursor: default; }
+:where(button, a, input, select, textarea, summary, [tabindex]):focus-visible {
+  outline: 2px solid var(--accent);
+  outline-offset: 3px;
+}
+::selection { background: var(--accent-light); color: var(--text); }
+::placeholder { color: var(--dim); opacity: 1; }
+* { scrollbar-color: #a59bc6 transparent; }
+.brand { display: flex; align-items: center; gap: 12px; }
+.brand-mark {
+  display: block;
+  position: relative;
+  flex: 0 0 40px;
+  height: 40px;
+  border-radius: var(--control-radius);
+  background: var(--accent-fill);
+  box-shadow: var(--accent-lift);
+}
+/* 三道提词行组成共用标记。 */
+.brand-mark::before {
+  content: "";
+  position: absolute;
+  inset: 11px 10px;
+  border-block: 2px solid var(--accent-ink);
+  border-radius: 2px;
+}
+.brand-mark::after {
+  content: "";
+  position: absolute;
+  inset: 19px auto auto 10px;
+  width: 13px;
+  border-top: 2px solid var(--accent-ink);
+}
+
+/* 低优先级的表单基础样式，便于各页面保留现有字段尺寸和布局。 */
+:where(input:not([type="checkbox"], [type="radio"]), textarea, select) {
+  min-width: 0;
+  padding: 8px 11px;
+  border: 1px solid transparent;
+  border-radius: var(--control-radius);
+  background: var(--well);
+  box-shadow: var(--inset);
+  caret-color: var(--accent);
+}
+:where(input[type="checkbox"], input[type="radio"]) { accent-color: var(--accent); }
+.control {
+  min-height: 42px;
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  gap: 6px;
+  padding: 7px 13px;
+  border: 1px solid transparent;
+  border-radius: var(--control-radius);
+  background: var(--raised);
+  box-shadow: var(--lift);
+  color: var(--text);
+  font-size: 14px;
+  font-weight: 600;
+  text-decoration: none;
+  white-space: nowrap;
+  transition: background-color .16s, box-shadow .16s;
+}
+.control:hover:not(:disabled) { background: var(--paper); }
+.control:active:not(:disabled) { box-shadow: var(--inset); }
+.primary-control {
+  color: var(--accent-ink);
+  background: var(--accent-fill);
+  box-shadow: var(--accent-lift);
+}
+.primary-control:hover:not(:disabled) { background: var(--accent-hover); }
+.primary-control:active:not(:disabled) { box-shadow: var(--accent-inset); }
+
+/* 弹窗沿用面板表面，额外的投影刻画它与背景工作区之间的距离。 */
+.surface-dialog {
+  width: min(460px, calc(100% - 32px));
+  max-height: calc(100dvh - 32px);
+  padding: 0;
+  overflow: auto;
+  color: var(--text);
+  background: var(--surface-fill);
+  border: 0;
+  border-radius: var(--panel-radius);
+  box-shadow: var(--overlay-shadow);
+}
+.surface-dialog::backdrop { background: var(--backdrop); }
+.confirm-dialog form { padding: 22px; }
+.confirm-dialog h2 { margin: 0; font-size: 19px; line-height: 1.4; }
+.confirm-dialog p { margin: 10px 0 20px; color: var(--dim); font-size: 14px; line-height: 1.65; }
+.confirm-dialog footer { display: flex; flex-wrap: wrap; justify-content: flex-end; gap: 12px; }
+@media (prefers-reduced-motion: reduce) {
+  *, *::before, *::after { transition-duration: .01ms !important; }
+}

@@ -1,4 +1,6 @@
 // 文案审定页。所有文案内容都用 textContent / value 写入，不拼 HTML。
+import { askWorkspace } from "./workspace-dialog.js";
+
 const $ = (s) => document.querySelector(s);
 const el = (tag, cls, text) => {
   const n = document.createElement(tag);
@@ -23,17 +25,22 @@ async function loadList() {
   const list = await api("");
   const box = $("#scripts");
   box.replaceChildren();
-  if (!list.length) box.appendChild(el("p", "empty", "还没有生成的文案。运行 python -m server.script 生成。"));
+  if (!list.length) box.appendChild(el("p", "empty", "还没有生成的文案。可在工作台点「生成文案」，或通过命令行生成。"));
   for (const s of list) {
     const b = el("button", `item${s.name === current ? " active" : ""}`);
     b.type = "button";
+    if (s.name === current) b.setAttribute("aria-current", "true");
     const t = el("span", "t", s.title || s.name);
     t.appendChild(s.approved_at ? el("span", "badge ok", "已审定")
       : el("span", "badge warn", s.issues ? `待看 ${s.issues} 处` : "未审定"));
     b.appendChild(t);
     b.appendChild(el("span", "m", `${s.created_at || ""} · ${s.segments} 段 · ${s.chars} 字`));
-    b.addEventListener("click", () => {
-      if (dirty && !confirm("有未保存的修改，确定切换吗？")) return;
+    b.addEventListener("click", async () => {
+      if (dirty && !await askWorkspace({
+        title: "切换文案",
+        message: "当前文案还有未保存的修改，切换后将丢弃这些修改。",
+        action: "切换文案",
+      })) return;
       open(s.name);
     });
     box.appendChild(b);
@@ -61,7 +68,7 @@ function render(s) {
   $("#status").textContent = s.approved_at
     ? `已于 ${s.approved_at} 审定${s.approved_open_issues ? `（当时仍有 ${s.approved_open_issues} 处待看）` : ""}`
     : "未审定";
-  $("#run-hint").textContent = `开播命令：.venv/bin/python -m server.app --script data/scripts/${current} --live-id 你的房间号`;
+  $("#run-hint").textContent = "审定后回到工作台，点「载入演示」使用这份文案。";
   for (const k of ["title", "bible", "big_hook", "payoff"]) $(`#f-${k}`).value = s[k] || "";
   fillIssues($("#outline-issues"), s.outline_issues);
 
@@ -168,18 +175,27 @@ async function save() {
 }
 
 $("#save").addEventListener("click", async () => {
-  try { await save(); } catch (e) { alert(`保存失败：${e.message}`); }
+  try { await save(); } catch (e) {
+    await askWorkspace({ title: "保存失败", message: e.message, dismissOnly: true });
+  }
 });
 
 $("#approve").addEventListener("click", async () => {
   try {
     if (dirty) await save();
     const issues = document.querySelectorAll(".issues li").length;
-    if (issues && !confirm(`还有 ${issues} 处待看的问题，确定审定通过吗？`)) return;
+    // 保存只重跑程序检查，之前的模型审校记录仍需由主播确认。
+    if (issues && !await askWorkspace({
+      title: "确认审定",
+      message: `还有 ${issues} 条检查或审校记录。请核对文案并确认这些问题已处理。`,
+      action: "审定通过",
+    })) return;
     const data = await api(`/${encodeURIComponent(current)}/approve`, { method: "POST" });
     render(data.script);
     loadList();
-  } catch (e) { alert(`审定失败：${e.message}`); }
+  } catch (e) {
+    await askWorkspace({ title: "审定失败", message: e.message, dismissOnly: true });
+  }
 });
 
 for (const k of ["title", "bible", "big_hook", "payoff"]) {

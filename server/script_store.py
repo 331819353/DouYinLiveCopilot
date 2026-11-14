@@ -9,6 +9,11 @@ class Script:
         self.bible = self.data.get("bible", "")
         self._index()
 
+    def use(self, other):
+        # 引擎持有同一份 Script；先读取并校验新稿，再同步更新共享对象。
+        self.data, self.bible = other.data, other.bible
+        self.paragraphs, self.seg_of = other.paragraphs, other.seg_of
+
     def _index(self):
         self.paragraphs = {}
         self.seg_of = {}

@@ -1,4 +1,5 @@
 import { Scroller } from "./scroller.js";
+import { reviewUrl, setServiceReady, showRoom, syncManualSend } from "./workbench.js";
 
 // 评论和模型输出都是不可信内容：一律用 textContent 写入，不拼 HTML。
 const $ = (sel) => document.querySelector(sel);
@@ -22,52 +23,109 @@ const KIND_LABEL = { question: "提问", challenge: "质疑", resonance: "共鸣
 let ws;
 let script = null;
 let scroller = null;
+let writingPanelOpen = false;
 let startedAt = Date.now();
 let segIndex = {};      // 段落 id -> 段序号
 let segEnteredAt = null;
-let currentSeg = null;
+let currentSegmentId = null;  // 重连补上插入段时，当前段的序号可能变化
 let viewportTimer = null;
 let lastViewport = "";
+let serviceStarted;
+let scriptRev;
+let roomRev;
+let replyState = "disabled";
 
 // ---------------- WebSocket ----------------
 let retryMs = 1000;
 function connect() {
-  ws = new WebSocket(`ws://${location.host}/ws`);
+  ws = new WebSocket(`${location.protocol === "https:" ? "wss" : "ws"}://${location.host}/ws`);
   ws.onmessage = (e) => handle(JSON.parse(e.data));
   ws.onclose = () => {
+    setServiceReady(false);
+    // 服务断开时收起可执行的回复操作，重连后由服务端快照恢复可用状态。
+    replyState = "disabled";
+    commentsBox.querySelectorAll(".gen").forEach((button) => { button.disabled = true; });
+    insertBtn.disabled = true;
     setLamp("#src", "bad", "服务断开", "本机服务已断开，正在重连");
+    setLamp("#ai", "warn", "AI 状态未知", "正在重连本机服务");
     setTimeout(connect, retryMs);
     retryMs = Math.min(retryMs * 2, 10000); // 服务长时间不在时，重连逐步放慢
   };
-  ws.onopen = () => { retryMs = 1000; lastViewport = ""; sendViewport(); };
+  ws.onopen = () => { retryMs = 1000; };
 }
-function send(msg) { if (ws?.readyState === 1) ws.send(JSON.stringify(msg)); }
+function send(msg) {
+  if (ws?.readyState !== WebSocket.OPEN || scriptRev == null || roomRev == null) return false;
+  ws.send(JSON.stringify({ ...msg, script_rev: scriptRev, room_rev: roomRev }));
+  return true;
+}
 
 function handle(m) {
   switch (m.type) {
-    case "hello":
-      startedAt = m.started * 1000;
-      if (!script) renderScript(m.script);
-      $("#approval").hidden = !!m.approved;
-      $("#approval").title = `${m.script_file || ""}：开播前请在审定页通读并审定`;
+    case "hello": {
+      // 后端重启后版本可能从零开始，不能把上个进程的缓存当成同一房间。
+      if (serviceStarted != null && serviceStarted !== m.service_started) {
+        resetComments();
+        scriptRev = roomRev = undefined;
+      }
+      serviceStarted = m.service_started;
+      applyRoom(m.source);
+      applyScript(m);
+      setServiceReady(true);
+      // 重连以服务端的待选提案为准，补上错过的过期、忽略或插入操作。
+      for (const node of cardsBox.querySelectorAll(".card.insert")) {
+        if (node.dataset.id !== m.insert_proposal?.id) removeProposal(node.dataset.id);
+      }
+      if (m.insert_proposal) addProposal(m.insert_proposal);
+      lastViewport = "";
+      scheduleViewport();
       break;
+    }
     case "comment": queueComment(m); break;
     case "card": addCard(m.card); break;
-    case "source": showSource(m); break;
+    case "source": applyRoom(m); break;
     case "reply_status": showReply(m); break;
     case "stats": $("#online").textContent = `在线 ${m.online ?? "-"}`; break;
     case "insert_proposal": addProposal(m.proposal); break;
     case "insert_status": showInsertStatus(m); break;
-    case "insert_expired": document.querySelector(`.card[data-id="${CSS.escape(m.id)}"]`)?.remove(); break;
-    case "script_insert":
-      renderScript(m.script); // 插入段只会在当前段之后，已读内容的位置不变
-      document.querySelector(`.card.insert[data-seg="${CSS.escape(m.segment.id)}"]`)?.remove();
+    case "insert_expired":
+    case "insert_dismissed":
+      removeProposal(m.id);
       break;
+    case "script_insert":
+      syncScript(m.script);
+      removeProposal(m.proposal_id);
+      break;
+    case "script_selected": applyScript(m); break;
   }
 }
 
 // ---------------- 文案 ----------------
-function renderScript(data) {
+function applyScript(m) {
+  const changed = scriptRev !== m.script_rev;
+  scriptRev = m.script_rev;
+  startedAt = m.started * 1000;
+  if (changed) {
+    if (script) resetCards();
+    renderScript(m.script, true);
+    $("#current-script").textContent = m.script.title || m.script_file;
+    lastViewport = "";
+    scheduleViewport();
+  } else {
+    syncScript(m.script);
+  }
+  const demo = m.script_file === "script_demo.json" && !m.reviewable;
+  $("#approval").hidden = Boolean(m.approved) && !demo;
+  $("#approval").textContent = demo ? "演示稿" : "未审定";
+  $("#current-review").href = reviewUrl(m.reviewable ? m.script_file : null);
+}
+
+function syncScript(data) {
+  // 同一场内只有插入会修改文案，各段 id 的顺序未变时沿用当前布局。
+  if (!script || script.segments.length !== data.segments.length
+      || data.segments.some((seg, i) => seg.id !== script.segments[i].id)) renderScript(data);
+}
+
+function renderScript(data, startOver = false) {
   script = data;
   const track = $("#script-track");
   track.replaceChildren();
@@ -88,11 +146,23 @@ function renderScript(data) {
       paras.push(node);
     }
   });
-  if (scroller) {  // 再次渲染（插入段后）：沿用现有滚动位置
-    scroller.setParagraphs(paras);
+  const generatedCpm = Number(data.generated?.cpm);
+  const jump = $("#reader-jump");
+  jump.replaceChildren(new Option("跳转段落", ""), ...data.segments.map((seg, i) =>
+    new Option(`第 ${i + 1} 段 · ${seg.title}`, seg.paragraphs[0]?.id || "")));
+  jump.disabled = !paras.length;
+  if (scroller) {
+    if (startOver) {
+      // 不同文案可能有相同段落 id；主动换稿一律回到开头并使用新稿语速。
+      currentSegmentId = null;
+      $("#seg").textContent = "-";
+      scroller.setSpeed(generatedCpm || 240);
+    }
+    scroller.setParagraphs(paras, startOver);
+    showSpeed();
     return;
   }
-  const cpm = Number(store.get("cpm", 240)) || 240;
+  const cpm = Number(store.get(`cpm:${data.title}`, generatedCpm || 240)) || 240;
   scroller = new Scroller($("#script-viewport"), track, {
     cpm,
     onCurrent: onCurrentParagraph,
@@ -104,13 +174,18 @@ function renderScript(data) {
     },
   });
   scroller.setParagraphs(paras);
+  if (writingPanelOpen) scroller.hold("writing-panel");
+  if (matchMedia("(prefers-reduced-motion: reduce)").matches) scroller.toggleLock();
+  $("#play-toggle").disabled = false;
+  $("#speed-down").disabled = $("#speed-up").disabled = false;
+  showPlayback();
   showSpeed();
 }
 
 function onCurrentParagraph(id) {
-  const i = segIndex[id];
-  if (i !== currentSeg) {
-    currentSeg = i;
+  const segId = script.segments[segIndex[id]]?.id ?? null;
+  if (segId !== currentSegmentId) {
+    currentSegmentId = segId;
     segEnteredAt = Date.now();
     document.querySelectorAll(".card.insert").forEach((n) => n._checkStale?.());
   }
@@ -123,11 +198,15 @@ function scheduleViewport() {
 }
 function sendViewport() {
   if (!scroller) return;
-  const msg = { type: "viewport", visible: [...scroller.visible], reading: scroller.currentId };
+  // 窄屏可能装不下长段落的一半；只要阅读线在该段，仍可用这段作为回复依据。
+  const visible = new Set(scroller.visible);
+  const current = scroller.paras.find((p) => p.id === scroller.currentId);
+  const readingLine = scroller.offset + scroller.viewport.clientHeight * 0.35;
+  if (current && current.bottom >= readingLine) visible.add(current.id);
+  const msg = { type: "viewport", visible: [...visible], reading: scroller.currentId };
   const key = JSON.stringify(msg);
   if (key === lastViewport) return;
-  lastViewport = key;
-  send(msg);
+  if (send(msg)) lastViewport = key;
 }
 
 function showSpeed() { $("#speed").textContent = `${scroller.cpm} 字/分`; }
@@ -138,29 +217,58 @@ const fmt = (sec) => {
 };
 setInterval(() => {
   $("#clock").textContent = fmt((Date.now() - startedAt) / 1000);
-  if (script && currentSeg != null) {
-    const seg = script.segments[currentSeg];
+  const i = script?.segments.findIndex((seg) => seg.id === currentSegmentId) ?? -1;
+  if (i >= 0) {
+    const seg = script.segments[i];
     const left = (seg.planned_sec || 0) - (Date.now() - segEnteredAt) / 1000;
     const leftText = left >= 0 ? `剩 ${fmt(left).slice(3)}` : `超时 ${fmt(-left).slice(3)}`;
-    $("#seg").textContent = `第 ${currentSeg + 1}/${script.segments.length} 段 · ${seg.title} · ${leftText}`;
+    $("#seg").textContent = `第 ${i + 1}/${script.segments.length} 段 · ${seg.title} · ${leftText}`;
   }
 }, 500);
 
 // ---------------- 快捷键 ----------------
+document.addEventListener("workbench-view", (event) => {
+  writingPanelOpen = event.detail !== "read";
+  // 写稿期间暂停提词；回到提词时重新测量视口，保持当前内容。
+  if (writingPanelOpen) scroller?.hold("writing-panel");
+  else {
+    scroller?.layout();
+    scroller?.release("writing-panel");
+    scheduleViewport();
+  }
+});
+function showPlayback() {
+  $("#play-toggle").textContent = scroller.locked ? "继续提词" : "暂停提词";
+  $("#play-toggle").setAttribute("aria-pressed", String(scroller.locked));
+}
+$("#play-toggle").addEventListener("click", () => {
+  scroller.toggleLock();
+  showPlayback();
+});
+function adjustSpeed(change) {
+  scroller.setSpeed(scroller.cpm + change);
+  store.set(`cpm:${script.title}`, scroller.cpm);
+  showSpeed();
+}
+$("#speed-down").addEventListener("click", () => adjustSpeed(-10));
+$("#speed-up").addEventListener("click", () => adjustSpeed(10));
+$("#reader-jump").addEventListener("change", (event) => {
+  scroller?.jumpTo(event.target.value);
+  event.target.value = "";
+});
 document.addEventListener("keydown", (e) => {
-  if (e.target.closest("input, textarea") || !scroller) return;
+  // 模型设置使用原生对话框，打开时不响应工作台的提词快捷键。
+  if (writingPanelOpen || e.target.closest("dialog, input, textarea, select, button, a, [contenteditable]") || !scroller || e.isComposing) return;
   if (e.code === "Space") {
     e.preventDefault();
-    scroller.toggleLock();
-  } else if (e.key === "+" || e.key === "=") {
-    scroller.setSpeed(scroller.cpm + 10);
-  } else if (e.key === "-" || e.key === "_") {
-    scroller.setSpeed(scroller.cpm - 10);
-  } else {
+    if (!e.repeat) scroller.toggleLock();
+    showPlayback();
     return;
+  } else if (e.key === "+" || e.key === "=") {
+    adjustSpeed(10);
+  } else if (e.key === "-" || e.key === "_") {
+    adjustSpeed(-10);
   }
-  store.set("cpm", scroller.cpm);
-  showSpeed();
 });
 
 // ---------------- 评论 ----------------
@@ -185,9 +293,22 @@ $("#manual").addEventListener("submit", (e) => {
   e.preventDefault();
   const input = $("#manual-input");
   const text = input.value.trim();
-  if (text) send({ type: "manual_comment", text });
-  input.value = "";
+  if (text && send({ type: "manual_comment", text })) {
+    input.value = "";
+    syncManualSend();
+  }
 });
+
+function resetComments() {
+  pending = [];
+  unseen = 0;
+  pill.hidden = true;
+  seenComments.clear();
+  const empty = el("p", "empty", "");
+  empty.id = "comments-empty";
+  commentsBox.replaceChildren(empty);
+  $("#online").textContent = "在线 -";
+}
 
 function queueComment(c) {
   if (seenComments.has(c.id)) return;
@@ -209,18 +330,24 @@ setInterval(() => {
     row.appendChild(el("span", "nick", c.nick || "观众"));
     row.appendChild(el("span", "text", c.text));
     if (c.filtered) row.appendChild(el("span", "why", c.filtered));
-    if (!hidden) {
+    if (!c.filtered) {
       const gen = el("button", "gen", "生成回复");
       gen.type = "button";
+      gen.disabled = replyState !== "idle" && replyState !== "error";
       gen.addEventListener("click", () => send({ type: "reply_now", comment_id: c.id }));
       row.appendChild(gen);
-      visibleCount++;
     }
+    if (!hidden) visibleCount++;
     frag.appendChild(row);
   }
   pending = [];
+  if (visibleCount) $("#comments-empty")?.remove();
   commentsBox.appendChild(frag);
-  while (commentsBox.children.length > MAX_COMMENTS) commentsBox.firstElementChild.remove();
+  while (commentsBox.children.length > MAX_COMMENTS) {
+    const row = commentsBox.querySelector(".c");
+    seenComments.delete(row.dataset.id);
+    row.remove();
+  }
   if (hoverComments) {
     unseen += visibleCount;
     if (unseen) {
@@ -237,6 +364,19 @@ setInterval(() => {
 // ---------------- 回复卡片 ----------------
 const cardsBox = $("#cards");
 const seenCards = new Set();
+
+function resetCards() {
+  for (const node of cardsBox.querySelectorAll(".card")) {
+    scroller?.release(`${node.classList.contains("insert") ? "insert" : "card"}:${node.dataset.id}`);
+  }
+  seenCards.clear();
+  commentsBox.querySelectorAll(".cited").forEach((node) => node.classList.remove("cited"));
+  const empty = el("p", "empty", "AI 回复建议会显示在这里，供主播口播参考。");
+  empty.id = "cards-empty";
+  cardsBox.replaceChildren(empty);
+  $("#ai-note").textContent = "";
+  insertBtn.disabled = true;
+}
 
 function addCard(card) {
   if (seenCards.has(card.id)) return;
@@ -334,12 +474,17 @@ const TRUTH_LABEL = { lived: "亲历", fictional: "虚构", opinion: "观点" };
 const insertBtn = $("#insert-btn");
 insertBtn.addEventListener("click", () => send({ type: "insert_now" }));
 
+function removeProposal(id) {
+  // 所有结束提案的路径都解除这张卡的暂停，保留空格锁定等其他暂停原因。
+  scroller?.release(`insert:${id}`);
+  cardsBox.querySelector(`.card.insert[data-id="${CSS.escape(id)}"]`)?.remove();
+}
+
 function addProposal(p) {
   if (document.querySelector(`.card[data-id="${CSS.escape(p.id)}"]`)) return;
   $("#cards-empty")?.remove();
   const node = el("div", "card insert");
   node.dataset.id = p.id;
-  node.dataset.seg = p.segment.id;
   const meta = el("div", "meta");
   meta.appendChild(el("span", "kind", "建议插入段"));
   meta.appendChild(el("span", null, `约 ${Math.round(p.segment.planned_sec / 60)} 分钟 · ${p.segment.paragraphs.length} 段`));
@@ -352,7 +497,7 @@ function addProposal(p) {
   stale.hidden = true;
   node.appendChild(stale);
   node._checkStale = () => {  // 写这段时所在的段落和现在不同，提醒主播检查衔接
-    const now = script?.segments[currentSeg];
+    const now = script?.segments.find((seg) => seg.id === currentSegmentId);
     stale.hidden = !p.written_at || !now || now.id === p.written_at;
     stale.textContent = `⚠ 写这段时你在「${p.written_at_title}」，现在已到「${now?.title || ""}」，插入前留意衔接`;
   };
@@ -381,15 +526,9 @@ function addProposal(p) {
     preview.textContent = open ? "收起" : "预览";
     if (open) scroller?.hold(holdKey); else scroller?.release(holdKey);
   }, "primary");
-  btn("插入到下一段前", () => {
-    scroller?.release(holdKey);
-    send({ type: "insert_accept", id: p.id });
-  });
-  btn("忽略", () => {
-    scroller?.release(holdKey);
-    send({ type: "insert_dismiss", id: p.id });
-    node.remove();
-  });
+  // 等服务端确认后统一移除提案，其他已连接的页面也会收到结果。
+  btn("插入到下一段前", () => send({ type: "insert_accept", id: p.id }));
+  btn("忽略", () => send({ type: "insert_dismiss", id: p.id }));
   node.appendChild(actions);
   cardsBox.prepend(node);
 }
@@ -421,13 +560,33 @@ function showSource(m) {
   setLamp("#src", level, label, `${m.note || ""}${m.restarts ? `（已重连 ${m.restarts} 次）` : ""}`);
 }
 
+function applyRoom(m) {
+  if (roomRev !== m.room_rev) {
+    if (roomRev != null) {
+      resetComments();
+      resetCards();
+    }
+    roomRev = m.room_rev;
+    lastViewport = "";
+    scheduleViewport();
+  }
+  showSource(m);
+  showRoom(m);
+  const empty = $("#comments-empty");
+  if (empty) empty.textContent = m.state === "ok" ? "正在等待评论。"
+    : m.state === "starting" ? "连接成功后会开始接收评论。" : "连接房间或输入一条测试评论。";
+}
+
 const AI_TEXT = { idle: ["ok", "AI 就绪"], busy: ["busy", "AI 生成中"], error: ["warn", "AI 出错"],
   disabled: ["bad", "AI 未启用"] };
 function showReply(m) {
+  replyState = m.state;
+  commentsBox.querySelectorAll(".gen").forEach((btn) => { btn.disabled = !["idle", "error"].includes(replyState); });
   const [level, text] = AI_TEXT[m.state] || ["warn", m.state];
   const p50 = m.p50_ms ? ` · 中位 ${(m.p50_ms / 1000).toFixed(1)} 秒` : "";
   setLamp("#ai", level, text, `${m.provider} · 调用 ${m.calls} 次 · 卡片 ${m.cards} · 丢弃 ${m.dropped}${p50}`);
-  if (m.note) $("#ai-note").textContent = m.note;
+  $("#ai-note").textContent = m.note || "";
+  $("#ai-note").title = m.note || "";
 }
 
 connect();
